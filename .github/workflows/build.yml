@@ -11,8 +11,8 @@ on:
 jobs:
   build:
     name: Build Kernel + Repack TWRP
-    # FIX 1: OS Changed to ubuntu-20.04 to fix OpenSSL 3.0 / extract-cert compile errors
-    runs-on: ubuntu-20.04 
+    # Wapas ubuntu-22.04 par set kar diya kyunki 20.04 ab available nahi hai
+    runs-on: ubuntu-22.04 
     timeout-minutes: 120
 
     steps:
@@ -105,6 +105,11 @@ jobs:
         export NM=llvm-nm-14
         export OBJCOPY=llvm-objcopy-14
         export STRIP=llvm-strip-14
+
+        # FIX: OpenSSL 3.0 deprecation error fix for Ubuntu 22.04
+        export HOSTCFLAGS="-Wno-deprecated-declarations"
+        export HOSTCXXFLAGS="-Wno-deprecated-declarations"
+        export KBUILD_HOSTCFLAGS="-Wno-deprecated-declarations"
 
         echo "Generating .config from $DEFCONFIG..."
         make O=out ARCH=arm64 $DEFCONFIG
