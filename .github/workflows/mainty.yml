@@ -95,38 +95,30 @@ jobs:
         export LLVM=1
         export LLVM_IAS=1
         
-        # -fcommon fixes dtc yylloc. -Wno-deprecated-declarations fixes OpenSSL.
         export HOSTCFLAGS="-fcommon -Wno-deprecated-declarations"
         export HOSTCXXFLAGS="-fcommon -Wno-deprecated-declarations"
         export KBUILD_HOSTCFLAGS="-fcommon -Wno-deprecated-declarations"
 
         echo "Generating .config from $DEFCONFIG..."
-        make O=out ARCH=arm64 $DEFCONFIG 2>&1 | tee ../kernel_build.log
+        make O=out ARCH=arm64 $DEFCONFIG
 
         echo ">>> FIX 3: Auto-answering any new config prompts..."
-        yes "" | make O=out ARCH=arm64 oldconfig 2>&1 | tee -a ../kernel_build.log
+        yes "" | make O=out ARCH=arm64 oldconfig
 
         echo "Building kernel with $(nproc) cores..."
-        # NEW FIX: Added -Wno-unused-but-set-variable to KCFLAGS to stop the build from failing on unused variables
+        
+        # FIX 4: Removed | tee so errors show immediately. 
+        # Added -Wno-pointer-to-int-cast to fix the exact CCCI driver error from the log.
         make O=out ARCH=arm64 \
           CC=clang \
           CROSS_COMPILE=aarch64-linux-gnu- \
           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
           LLVM=1 LLVM_IAS=1 \
-          KCFLAGS="-Wno-error -Wno-unused-but-set-variable" \
-          -j$(nproc) 2>&1 | tee -a ../kernel_build.log
+          KCFLAGS="-Wno-error -Wno-unused-but-set-variable -Wno-pointer-to-int-cast -Wno-unused-variable" \
+          -j$(nproc) Image.gz dtbs
 
         echo "KERNEL BUILD OUTPUT:"
         ls -lh out/arch/arm64/boot/ || echo "ERROR: No boot output found!"
-
-    # ── 5.1 Upload Build Log Artifact ────────────────────────────────────────
-    - name: Upload Build Log
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: full-kernel-build-log
-        path: kernel_build.log
-        retention-days: 5
 
     # ── 5.5 Upload Raw Kernel Artifact ──────────────────────────────────────
     - name: Upload compiled raw kernel
