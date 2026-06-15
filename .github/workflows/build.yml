@@ -166,18 +166,21 @@ jobs:
     # ── 6. Get magiskboot + TWRP ─────────────────────────────────────────────
     - name: Download magiskboot and TWRP
       run: |
-        echo "Getting magiskboot..."
-        wget -q -O Magisk.apk \
-          https://github.com/topjohnwu/Magisk/releases/latest/download/Magisk.apk
+        echo "Getting magiskboot via GitHub API..."
+        MAGISK_URL=$(curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
+          | grep "browser_download_url" \
+          | grep "Magisk-v.*\.apk" \
+          | head -1 | cut -d'"' -f4)
+        echo "URL: $MAGISK_URL"
+        curl -fL -o Magisk.apk "$MAGISK_URL"
+
         unzip -p Magisk.apk lib/x86_64/libmagiskboot.so > magiskboot
         chmod +x magiskboot
-        ./magiskboot || true   # prints usage = confirms it works
+        ./magiskboot || true
 
-        echo ""
         echo "Downloading TWRP..."
-        wget --no-check-certificate -O twrp.img \
-          "${{ github.event.inputs.twrp_url }}"
-        echo "TWRP size: $(ls -lh twrp.img)"
+        curl -fL -o twrp.img "${{ github.event.inputs.twrp_url }}"
+        echo "TWRP: $(ls -lh twrp.img)"
 
     # ── 7. Repack ────────────────────────────────────────────────────────────
     - name: Repack TWRP with new kernel
