@@ -2,16 +2,11 @@ name: TWRP Touch Fix - Poco M4 5G (light)
 
 on:
   workflow_dispatch:
-    inputs:
-      twrp_url:
-        description: 'TWRP Image URL (e.g., https://github.com/.../twrp.img)'
-        required: true
-        default: ''
+    # URL input section hata diya gaya hai kyunki ab URL hardcoded hai
 
 jobs:
   build:
     name: Build Kernel + Repack TWRP
-    # Wapas ubuntu-22.04 par set kar diya kyunki 20.04 ab available nahi hai
     runs-on: ubuntu-22.04 
     timeout-minutes: 120
 
@@ -41,7 +36,6 @@ jobs:
 
     # ── 3. Set Config ───────────────────────────────────────────────────────
     - name: Set defconfig
-      id: discover
       working-directory: kernel
       run: |
         DEFCONFIG="light_defconfig"
@@ -50,11 +44,22 @@ jobs:
         echo "========================================="
         echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
 
-    # ── 4. Patch defconfig (Enable All Major Touch Drivers) ──────────────────
-    - name: Patch defconfig - Enable NVT and others
+    # ── 4. Patch defconfig & Fix Kernel Source ───────────────────────────────
+    - name: Apply Fixes and Enable Touch Drivers
       working-directory: kernel
       run: |
         CFG="arch/arm64/configs/$DEFCONFIG"
+
+        echo ">>> Applying Kernel Source Fixes for Ubuntu 22.04..."
+        # Fix 1: Remove -Werror so minor warnings don't crash the entire build
+        find . -type f -name "Makefile" -exec sed -i 's/-Werror//g' {} +
+        
+        # Fix 2: Fix 'yylloc' multiple definition error in dtc (Host GCC 11+ issue)
+        sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
+        
+        # Fix 3: Disable Trusted Keys to avoid extract-cert OpenSSL 3.0 crashes completely
+        sed -i 's/CONFIG_SYSTEM_TRUSTED_KEYS.*/CONFIG_SYSTEM_TRUSTED_KEYS=""/g' "$CFG" || true
+        sed -i 's/CONFIG_SYSTEM_REVOCATION_KEYS.*/CONFIG_SYSTEM_REVOCATION_KEYS=""/g' "$CFG" || true
 
         echo ">>> Enabling Touch Drivers (NVT, FocalTech, Goodix) as built-in (=y)..."
         for name in \
@@ -72,23 +77,16 @@ jobs:
           CONFIG_TOUCHSCREEN_FT8719 \
           CONFIG_TOUCHSCREEN_GOODIX; do
           
-          # Agar disabled hai, toh enable karo
+          # Enable if disabled
           sed -i "s/^# ${name} is not set/${name}=y/" "$CFG"
-          # Agar module (=m) hai, toh built-in (=y) karo
+          # Convert module (=m) to built-in (=y)
           sed -i "s/^${name}=m/${name}=y/" "$CFG"
           
-          # Agar file mein hai hi nahi, toh add kardo
+          # Add if missing
           if ! grep -q "^${name}=" "$CFG"; then
             echo "${name}=y" >> "$CFG"
-            echo "  Added and Enabled: $name"
-          else
-            echo "  Enabled/Verified: $name"
           fi
         done
-
-        echo ""
-        echo ">>> Final touch config check:"
-        grep -i "TOUCH\|NT36\|NOVATEK\|FOCAL\|FT3\|FT8\|NVT\|GOODIX" "$CFG" || echo "No matches"
 
     # ── 5. Build kernel ──────────────────────────────────────────────────────
     - name: Build kernel
@@ -105,11 +103,10 @@ jobs:
         export NM=llvm-nm-14
         export OBJCOPY=llvm-objcopy-14
         export STRIP=llvm-strip-14
-
-        # FIX: OpenSSL 3.0 deprecation error fix for Ubuntu 22.04
+        
+        # Extra warning suppressions
         export HOSTCFLAGS="-Wno-deprecated-declarations"
         export HOSTCXXFLAGS="-Wno-deprecated-declarations"
-        export KBUILD_HOSTCFLAGS="-Wno-deprecated-declarations"
 
         echo "Generating .config from $DEFCONFIG..."
         make O=out ARCH=arm64 $DEFCONFIG
@@ -151,8 +148,9 @@ jobs:
         chmod +x magiskboot
         ./magiskboot || true
 
-        echo "Downloading TWRP..."
-        curl -fL -o twrp.img "${{ github.event.inputs.twrp_url }}"
+        echo "Downloading Hardcoded TWRP..."
+        # Yahan aapka direct TWRP link implement kar diya gaya hai
+        curl -fL -o twrp.img "https://github.com/testuru56-del/twrp-light-builder/releases/download/twrp/twrp.img"
 
     # ── 7. Repack ────────────────────────────────────────────────────────────
     - name: Repack TWRP with new kernel
@@ -193,3 +191,4 @@ jobs:
         name: twrp-touch-fixed-light
         path: twrp_touch_fixed.img
         retention-days: 5
+
