@@ -1,0 +1,231 @@
+name: TWRP Touch Fix - Poco M4 5G (light)
+
+on:
+  workflow_dispatch:
+    inputs:
+      twrp_url:
+        description: 'Direct download URL for your TWRP boot.img'
+        required: true
+        default: ''
+
+jobs:
+  build:
+    name: Build Kernel + Repack TWRP
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+
+    # ── 1. Dependencies ─────────────────────────────────────────────────────
+    - name: Install build tools
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y \
+          git make bc bison flex cpio zip unzip curl wget python3 \
+          libssl-dev libelf-dev \
+          clang-14 lld-14 llvm-14 \
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+          binutils-aarch64-linux-gnu
+
+    # ── 2. Clone kernel source ───────────────────────────────────────────────
+    - name: Clone light-u-oss kernel source
+      run: |
+        echo "Cloning Xiaomi kernel source (light-u-oss)..."
+        git clone --depth=1 \
+          -b light-u-oss \
+          https://github.com/MiCode/Xiaomi_Kernel_OpenSource \
+          kernel
+        echo "Done. Kernel source size:"
+        du -sh kernel
+
+    # ── 3. Discover config ───────────────────────────────────────────────────
+    - name: Discover defconfig and touch drivers
+      id: discover
+      working-directory: kernel
+      run: |
+        echo "========================================="
+        echo "AVAILABLE DEFCONFIGS:"
+        echo "========================================="
+        ls arch/arm64/configs/
+
+        # Auto-find defconfig for light / MT6833
+        DEFCONFIG=""
+        for pattern in light Light mt6833 6833; do
+          FOUND=$(ls arch/arm64/configs/ | grep -i "$pattern" | head -1)
+          if [ -n "$FOUND" ]; then
+            DEFCONFIG="$FOUND"
+            break
+          fi
+        done
+
+        # Fallback: check Makefile or build scripts for clues
+        if [ -z "$DEFCONFIG" ]; then
+          echo "Could not auto-detect defconfig. Using first arm64 config:"
+          DEFCONFIG=$(ls arch/arm64/configs/ | head -1)
+        fi
+
+        echo ""
+        echo "========================================="
+        echo "USING DEFCONFIG: $DEFCONFIG"
+        echo "========================================="
+        echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
+
+        echo ""
+        echo "========================================="
+        echo "TOUCH DRIVERS IN SOURCE:"
+        echo "========================================="
+        ls drivers/input/touchscreen/ | grep -Ei "nt|nova|focal|ft3|ft8|touch" || \
+          ls drivers/input/touchscreen/
+
+        echo ""
+        echo "========================================="
+        echo "TOUCH CONFIG IN DEFCONFIG:"
+        echo "========================================="
+        grep -i "TOUCH\|NT36\|NOVATEK\|FOCAL\|FT3\|FT8\|NVT" \
+          arch/arm64/configs/$DEFCONFIG || echo "No touch entries found!"
+
+    # ── 4. Patch defconfig ───────────────────────────────────────────────────
+    - name: Patch defconfig - Enable NT36XXX, Disable FocalTech
+      working-directory: kernel
+      run: |
+        CFG="arch/arm64/configs/$DEFCONFIG"
+
+        echo ">>> Disabling FocalTech drivers..."
+        # Covers common Xiaomi FocalTech config name variants
+        for name in \
+          CONFIG_TOUCHSCREEN_FOCAL_FT3658U \
+          CONFIG_TOUCHSCREEN_FOCAL_FT8722 \
+          CONFIG_TOUCHSCREEN_FTS \
+          CONFIG_TOUCHSCREEN_FOCALTECH_FTS \
+          CONFIG_TOUCHSCREEN_FOCALTECH \
+          CONFIG_TOUCHSCREEN_FT8719; do
+          if grep -q "^${name}=y" "$CFG"; then
+            sed -i "s/^${name}=y/# ${name} is not set/" "$CFG"
+            echo "  Disabled: $name"
+          fi
+        done
+
+        echo ""
+        echo ">>> Enabling Novatek NT36XXX drivers..."
+        # Covers common Xiaomi Novatek config name variants
+        for name in \
+          CONFIG_TOUCHSCREEN_NT36XXX \
+          CONFIG_TOUCHSCREEN_NT36523 \
+          CONFIG_TOUCHSCREEN_NT36672A \
+          CONFIG_TOUCHSCREEN_NT36XXX_MTK \
+          CONFIG_TOUCHSCREEN_NVT_NT36XXX \
+          CONFIG_TOUCHSCREEN_NT36xxx; do
+          if grep -q "^# ${name} is not set" "$CFG"; then
+            sed -i "s/^# ${name} is not set/${name}=y/" "$CFG"
+            echo "  Enabled: $name"
+          elif ! grep -q "$name" "$CFG"; then
+            echo "${name}=y" >> "$CFG"
+            echo "  Added:   $name"
+          fi
+        done
+
+        echo ""
+        echo ">>> Final touch config:"
+        grep -i "TOUCH\|NT36\|NOVATEK\|FOCAL\|FT3\|FT8\|NVT" "$CFG" || echo "No matches"
+
+    # ── 5. Build kernel ──────────────────────────────────────────────────────
+    - name: Build kernel
+      working-directory: kernel
+      run: |
+        export ARCH=arm64
+        export SUBARCH=arm64
+        export CC=clang-14
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+        export CLANG_TRIPLE=aarch64-linux-gnu-
+        export LD=ld.lld-14
+        export AR=llvm-ar-14
+        export NM=llvm-nm-14
+        export OBJCOPY=llvm-objcopy-14
+        export STRIP=llvm-strip-14
+
+        make O=out ARCH=arm64 light_debug_defconfig
+
+        echo "=== Building kernel (this takes 30-50 min) ==="
+        make O=out ARCH=arm64 \
+          CC=clang-14 \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+          CLANG_TRIPLE=aarch64-linux-gnu- \
+          LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 \
+          OBJCOPY=llvm-objcopy-14 \
+          -j$(nproc) > /tmp/build.log 2>&1 \
+          || { echo "BUILD FAILED. Last errors:"; tail -60 /tmp/build.log; exit 1; }
+
+        echo "=== Build succeeded! Output: ==="
+        ls -lh out/arch/arm64/boot/
+
+    # ── 6. Get magiskboot + TWRP ─────────────────────────────────────────────
+    - name: Download magiskboot and TWRP
+      run: |
+        echo "Getting magiskboot via GitHub API..."
+        MAGISK_URL=$(curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
+          | grep "browser_download_url" \
+          | grep "Magisk-v.*\.apk" \
+          | head -1 | cut -d'"' -f4)
+        echo "URL: $MAGISK_URL"
+        curl -fL -o Magisk.apk "$MAGISK_URL"
+
+        unzip -p Magisk.apk lib/x86_64/libmagiskboot.so > magiskboot
+        chmod +x magiskboot
+        ./magiskboot || true
+
+        echo "Downloading TWRP..."
+        curl -fL -o twrp.img "${{ github.event.inputs.twrp_url }}"
+        echo "TWRP: $(ls -lh twrp.img)"
+
+    # ── 7. Repack ────────────────────────────────────────────────────────────
+    - name: Repack TWRP with new kernel
+      run: |
+        mkdir work && cd work
+        ../magiskboot unpack ../twrp.img
+
+        echo "=== Boot image parts ==="
+        ls -lah
+
+        # Find the best kernel output image
+        cd ..
+        KIMG=""
+        for f in \
+          kernel/out/arch/arm64/boot/Image.gz-dtb \
+          kernel/out/arch/arm64/boot/Image-dtb \
+          kernel/out/arch/arm64/boot/Image.gz \
+          kernel/out/arch/arm64/boot/Image; do
+          if [ -f "$f" ]; then KIMG="$f"; break; fi
+        done
+
+        if [ -z "$KIMG" ]; then
+          echo "ERROR: No kernel image built!"
+          exit 1
+        fi
+        echo "Using kernel image: $KIMG"
+        cp "$KIMG" work/kernel
+
+        # Replace DTB if separately built
+        if [ -f kernel/out/arch/arm64/boot/dtb.img ]; then
+          cp kernel/out/arch/arm64/boot/dtb.img work/dtb
+          echo "DTB also replaced."
+        fi
+
+        cd work
+        ../magiskboot repack ../twrp.img
+        mv new-boot.img ../twrp_touch_fixed.img
+
+        echo ""
+        echo "========================================="
+        echo "DONE! Output: $(ls -lh ../twrp_touch_fixed.img)"
+        echo "========================================="
+
+    # ── 8. Upload artifact ───────────────────────────────────────────────────
+    - name: Upload fixed TWRP image
+      uses: actions/upload-artifact@v4
+      with:
+        name: twrp-touch-fixed-light
+        path: twrp_touch_fixed.img
+        retention-days: 5
+
