@@ -95,7 +95,7 @@ jobs:
         export LLVM=1
         export LLVM_IAS=1
         
-        # -fcommon completely fixes the dtc yylloc error without breaking lexers!
+        # -fcommon fixes dtc yylloc. -Wno-deprecated-declarations fixes OpenSSL.
         export HOSTCFLAGS="-fcommon -Wno-deprecated-declarations"
         export HOSTCXXFLAGS="-fcommon -Wno-deprecated-declarations"
         export KBUILD_HOSTCFLAGS="-fcommon -Wno-deprecated-declarations"
@@ -107,13 +107,13 @@ jobs:
         yes "" | make O=out ARCH=arm64 oldconfig 2>&1 | tee -a ../kernel_build.log
 
         echo "Building kernel with $(nproc) cores..."
-        # KCFLAGS="-Wno-error" safely ignores all warnings without mangling makefiles
+        # NEW FIX: Added -Wno-unused-but-set-variable to KCFLAGS to stop the build from failing on unused variables
         make O=out ARCH=arm64 \
           CC=clang \
           CROSS_COMPILE=aarch64-linux-gnu- \
           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
           LLVM=1 LLVM_IAS=1 \
-          KCFLAGS="-Wno-error" \
+          KCFLAGS="-Wno-error -Wno-unused-but-set-variable" \
           -j$(nproc) 2>&1 | tee -a ../kernel_build.log
 
         echo "KERNEL BUILD OUTPUT:"
