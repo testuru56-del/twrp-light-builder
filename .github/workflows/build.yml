@@ -2,12 +2,11 @@ name: TWRP Touch Fix - Poco M4 5G (light)
 
 on:
   workflow_dispatch:
-    # URL input section hata diya gaya hai kyunki ab URL hardcoded hai
 
 jobs:
   build:
     name: Build Kernel + Repack TWRP
-    runs-on: ubuntu-22.04 
+    runs-on: ubuntu-22.04
     timeout-minutes: 120
 
     steps:
@@ -50,14 +49,21 @@ jobs:
       run: |
         CFG="arch/arm64/configs/$DEFCONFIG"
 
-        echo ">>> Applying Kernel Source Fixes for Ubuntu 22.04..."
-        # Fix 1: Remove -Werror so minor warnings don't crash the entire build
-        find . -type f -name "Makefile" -exec sed -i 's/-Werror//g' {} +
+        echo ">>> FIX 1: Bypass missing 'mihw' vendor files..."
+        # Xiaomi hardware module ko compile hone se rokna taaki vendor error na aaye
+        echo "" > drivers/mihw/Makefile
+        sed -i 's/obj-$(CONFIG_MI_HARDWARE) += mihw.o//g' drivers/Makefile || true
+
+        echo ">>> FIX 2: Safely fixing Compiler Warnings (=return-type issue)..."
+        # -Werror ko safely -Wno-error mein convert karna taaki strings break na hon
+        find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror/-Wno-error/g' {} +
         
-        # Fix 2: Fix 'yylloc' multiple definition error in dtc (Host GCC 11+ issue)
+        # GCC 11+ / Clang 14 Variable Fix
         sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
         
-        # Fix 3: Disable Trusted Keys to avoid extract-cert OpenSSL 3.0 crashes completely
+        # Kill Module Signing & Certificates
+        sed -i 's/CONFIG_MODULE_SIG=y/# CONFIG_MODULE_SIG is not set/g' "$CFG" || true
+        sed -i 's/CONFIG_MODULE_SIG_ALL=y/# CONFIG_MODULE_SIG_ALL is not set/g' "$CFG" || true
         sed -i 's/CONFIG_SYSTEM_TRUSTED_KEYS.*/CONFIG_SYSTEM_TRUSTED_KEYS=""/g' "$CFG" || true
         sed -i 's/CONFIG_SYSTEM_REVOCATION_KEYS.*/CONFIG_SYSTEM_REVOCATION_KEYS=""/g' "$CFG" || true
 
@@ -77,12 +83,8 @@ jobs:
           CONFIG_TOUCHSCREEN_FT8719 \
           CONFIG_TOUCHSCREEN_GOODIX; do
           
-          # Enable if disabled
           sed -i "s/^# ${name} is not set/${name}=y/" "$CFG"
-          # Convert module (=m) to built-in (=y)
           sed -i "s/^${name}=m/${name}=y/" "$CFG"
-          
-          # Add if missing
           if ! grep -q "^${name}=" "$CFG"; then
             echo "${name}=y" >> "$CFG"
           fi
@@ -97,28 +99,26 @@ jobs:
         export CC=clang-14
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-        export CLANG_TRIPLE=aarch64-linux-gnu-
-        export LD=ld.lld-14
-        export AR=llvm-ar-14
-        export NM=llvm-nm-14
-        export OBJCOPY=llvm-objcopy-14
-        export STRIP=llvm-strip-14
+        export LLVM=1
+        export LLVM_IAS=1
         
-        # Extra warning suppressions
         export HOSTCFLAGS="-Wno-deprecated-declarations"
         export HOSTCXXFLAGS="-Wno-deprecated-declarations"
+        export KBUILD_HOSTCFLAGS="-Wno-deprecated-declarations"
 
         echo "Generating .config from $DEFCONFIG..."
         make O=out ARCH=arm64 $DEFCONFIG
+
+        echo ">>> FIX 3: Auto-answering any new config prompts..."
+        # Ye command un saare Yes/No questions ko default value de degi jo build ko atka rahe the
+        yes "" | make O=out ARCH=arm64 oldconfig
 
         echo "Building kernel with $(nproc) cores..."
         make O=out ARCH=arm64 \
           CC=clang-14 \
           CROSS_COMPILE=aarch64-linux-gnu- \
           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-          CLANG_TRIPLE=aarch64-linux-gnu- \
-          LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 \
-          OBJCOPY=llvm-objcopy-14 \
+          LLVM=1 LLVM_IAS=1 \
           -j$(nproc)
 
         echo "KERNEL BUILD OUTPUT:"
@@ -138,18 +138,16 @@ jobs:
     - name: Download magiskboot and TWRP
       run: |
         echo "Getting magiskboot via GitHub API..."
-        MAGISK_URL=$(curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
+        curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
           | grep "browser_download_url" \
           | grep "Magisk-v.*\.apk" \
-          | head -1 | cut -d'"' -f4)
-        curl -fL -o Magisk.apk "$MAGISK_URL"
+          | head -1 | cut -d'"' -f4 | xargs curl -fL -o Magisk.apk
 
         unzip -p Magisk.apk lib/x86_64/libmagiskboot.so > magiskboot
         chmod +x magiskboot
         ./magiskboot || true
 
-        echo "Downloading Hardcoded TWRP..."
-        # Yahan aapka direct TWRP link implement kar diya gaya hai
+        echo "Downloading TWRP..."
         curl -fL -o twrp.img "https://github.com/testuru56-del/twrp-light-builder/releases/download/twrp/twrp.img"
 
     # ── 7. Repack ────────────────────────────────────────────────────────────
@@ -191,4 +189,3 @@ jobs:
         name: twrp-touch-fixed-light
         path: twrp_touch_fixed.img
         retention-days: 5
-
