@@ -15,10 +15,11 @@ jobs:
     - name: Install build tools
       run: |
         sudo apt-get update -qq
+        # FIX: Removed -14 suffix so exact names like ld.lld and llvm-objdump are available
         sudo apt-get install -y \
           git make bc bison flex cpio zip unzip curl wget python3 \
           libssl-dev libelf-dev \
-          clang-14 lld-14 llvm-14 \
+          clang lld llvm \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
           binutils-aarch64-linux-gnu
 
@@ -50,18 +51,15 @@ jobs:
         CFG="arch/arm64/configs/$DEFCONFIG"
 
         echo ">>> FIX 1: Bypass missing 'mihw' vendor files..."
-        # Xiaomi hardware module ko compile hone se rokna taaki vendor error na aaye
+        mkdir -p drivers/mihw
         echo "" > drivers/mihw/Makefile
         sed -i 's/obj-$(CONFIG_MI_HARDWARE) += mihw.o//g' drivers/Makefile || true
 
         echo ">>> FIX 2: Safely fixing Compiler Warnings (=return-type issue)..."
-        # -Werror ko safely -Wno-error mein convert karna taaki strings break na hon
         find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror/-Wno-error/g' {} +
         
-        # GCC 11+ / Clang 14 Variable Fix
         sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
         
-        # Kill Module Signing & Certificates
         sed -i 's/CONFIG_MODULE_SIG=y/# CONFIG_MODULE_SIG is not set/g' "$CFG" || true
         sed -i 's/CONFIG_MODULE_SIG_ALL=y/# CONFIG_MODULE_SIG_ALL is not set/g' "$CFG" || true
         sed -i 's/CONFIG_SYSTEM_TRUSTED_KEYS.*/CONFIG_SYSTEM_TRUSTED_KEYS=""/g' "$CFG" || true
@@ -96,7 +94,7 @@ jobs:
       run: |
         export ARCH=arm64
         export SUBARCH=arm64
-        export CC=clang-14
+        export CC=clang
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
         export LLVM=1
@@ -107,22 +105,31 @@ jobs:
         export KBUILD_HOSTCFLAGS="-Wno-deprecated-declarations"
 
         echo "Generating .config from $DEFCONFIG..."
-        make O=out ARCH=arm64 $DEFCONFIG
+        make O=out ARCH=arm64 $DEFCONFIG 2>&1 | tee ../kernel_build.log
 
         echo ">>> FIX 3: Auto-answering any new config prompts..."
-        # Ye command un saare Yes/No questions ko default value de degi jo build ko atka rahe the
-        yes "" | make O=out ARCH=arm64 oldconfig
+        yes "" | make O=out ARCH=arm64 oldconfig 2>&1 | tee -a ../kernel_build.log
 
         echo "Building kernel with $(nproc) cores..."
+        # Added tee to save all logs for debugging
         make O=out ARCH=arm64 \
-          CC=clang-14 \
+          CC=clang \
           CROSS_COMPILE=aarch64-linux-gnu- \
           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
           LLVM=1 LLVM_IAS=1 \
-          -j$(nproc)
+          -j$(nproc) 2>&1 | tee -a ../kernel_build.log
 
         echo "KERNEL BUILD OUTPUT:"
         ls -lh out/arch/arm64/boot/ || echo "ERROR: No boot output found!"
+
+    # ── 5.1 Upload Build Log Artifact (Will run even if build fails) ─────────
+    - name: Upload Build Log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: full-kernel-build-log
+        path: kernel_build.log
+        retention-days: 5
 
     # ── 5.5 Upload Raw Kernel Artifact ──────────────────────────────────────
     - name: Upload compiled raw kernel
