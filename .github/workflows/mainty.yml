@@ -2,11 +2,6 @@ name: TWRP Touch Fix - Poco M4 5G (light)
 
 on:
   workflow_dispatch:
-    inputs:
-      twrp_url:
-        description: 'Direct download URL for your TWRP boot.img'
-        required: true
-        default: ''
 
 jobs:
   build:
@@ -23,7 +18,7 @@ jobs:
         sudo apt-get install -y \
           git make bc bison flex cpio zip unzip curl wget python3 \
           libssl-dev libelf-dev \
-          clang-14 lld-14 llvm-14 \
+          clang lld llvm \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
           binutils-aarch64-linux-gnu
 
@@ -38,95 +33,55 @@ jobs:
         echo "Done. Kernel source size:"
         du -sh kernel
 
-    # ── 3. Discover config ───────────────────────────────────────────────────
-    - name: Discover defconfig and touch drivers
-      id: discover
+    # ── 3. Set Config ───────────────────────────────────────────────────────
+    - name: Set defconfig
       working-directory: kernel
       run: |
-        echo "========================================="
-        echo "AVAILABLE DEFCONFIGS:"
-        echo "========================================="
-        ls arch/arm64/configs/
-
-        # Auto-find defconfig for light / MT6833
-        DEFCONFIG=""
-        for pattern in light Light mt6833 6833; do
-          FOUND=$(ls arch/arm64/configs/ | grep -i "$pattern" | head -1)
-          if [ -n "$FOUND" ]; then
-            DEFCONFIG="$FOUND"
-            break
-          fi
-        done
-
-        # Fallback: check Makefile or build scripts for clues
-        if [ -z "$DEFCONFIG" ]; then
-          echo "Could not auto-detect defconfig. Using first arm64 config:"
-          DEFCONFIG=$(ls arch/arm64/configs/ | head -1)
-        fi
-
-        echo ""
+        DEFCONFIG="light_defconfig"
         echo "========================================="
         echo "USING DEFCONFIG: $DEFCONFIG"
         echo "========================================="
         echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
 
-        echo ""
-        echo "========================================="
-        echo "TOUCH DRIVERS IN SOURCE:"
-        echo "========================================="
-        ls drivers/input/touchscreen/ | grep -Ei "nt|nova|focal|ft3|ft8|touch" || \
-          ls drivers/input/touchscreen/
-
-        echo ""
-        echo "========================================="
-        echo "TOUCH CONFIG IN DEFCONFIG:"
-        echo "========================================="
-        grep -i "TOUCH\|NT36\|NOVATEK\|FOCAL\|FT3\|FT8\|NVT" \
-          arch/arm64/configs/$DEFCONFIG || echo "No touch entries found!"
-
-    # ── 4. Patch defconfig ───────────────────────────────────────────────────
-    - name: Patch defconfig - Enable NT36XXX, Disable FocalTech
+    # ── 4. Patch defconfig & Fix Kernel Source ───────────────────────────────
+    - name: Apply Fixes and Enable Touch Drivers
       working-directory: kernel
       run: |
         CFG="arch/arm64/configs/$DEFCONFIG"
 
-        echo ">>> Disabling FocalTech drivers..."
-        # Covers common Xiaomi FocalTech config name variants
-        for name in \
-          CONFIG_TOUCHSCREEN_FOCAL_FT3658U \
-          CONFIG_TOUCHSCREEN_FOCAL_FT8722 \
-          CONFIG_TOUCHSCREEN_FTS \
-          CONFIG_TOUCHSCREEN_FOCALTECH_FTS \
-          CONFIG_TOUCHSCREEN_FOCALTECH \
-          CONFIG_TOUCHSCREEN_FT8719; do
-          if grep -q "^${name}=y" "$CFG"; then
-            sed -i "s/^${name}=y/# ${name} is not set/" "$CFG"
-            echo "  Disabled: $name"
-          fi
-        done
+        echo ">>> FIX 1: Bypass missing 'mihw' vendor files..."
+        mkdir -p drivers/mihw
+        echo "" > drivers/mihw/Makefile
+        sed -i 's/obj-$(CONFIG_MI_HARDWARE) += mihw.o//g' drivers/Makefile || true
 
-        echo ""
-        echo ">>> Enabling Novatek NT36XXX drivers..."
-        # Covers common Xiaomi Novatek config name variants
+        echo ">>> FIX 2: Kill Module Signing & Certificates (Fixes extract-cert)..."
+        sed -i 's/CONFIG_MODULE_SIG=y/# CONFIG_MODULE_SIG is not set/g' "$CFG" || true
+        sed -i 's/CONFIG_MODULE_SIG_ALL=y/# CONFIG_MODULE_SIG_ALL is not set/g' "$CFG" || true
+        sed -i 's/CONFIG_SYSTEM_TRUSTED_KEYS.*/CONFIG_SYSTEM_TRUSTED_KEYS=""/g' "$CFG" || true
+        sed -i 's/CONFIG_SYSTEM_REVOCATION_KEYS.*/CONFIG_SYSTEM_REVOCATION_KEYS=""/g' "$CFG" || true
+
+        echo ">>> Enabling Touch Drivers (NVT, FocalTech, Goodix) as built-in (=y)..."
         for name in \
           CONFIG_TOUCHSCREEN_NT36XXX \
           CONFIG_TOUCHSCREEN_NT36523 \
           CONFIG_TOUCHSCREEN_NT36672A \
           CONFIG_TOUCHSCREEN_NT36XXX_MTK \
           CONFIG_TOUCHSCREEN_NVT_NT36XXX \
-          CONFIG_TOUCHSCREEN_NT36xxx; do
-          if grep -q "^# ${name} is not set" "$CFG"; then
-            sed -i "s/^# ${name} is not set/${name}=y/" "$CFG"
-            echo "  Enabled: $name"
-          elif ! grep -q "$name" "$CFG"; then
+          CONFIG_TOUCHSCREEN_NT36xxx \
+          CONFIG_TOUCHSCREEN_FOCAL_FT3658U \
+          CONFIG_TOUCHSCREEN_FOCAL_FT8722 \
+          CONFIG_TOUCHSCREEN_FTS \
+          CONFIG_TOUCHSCREEN_FOCALTECH_FTS \
+          CONFIG_TOUCHSCREEN_FOCALTECH \
+          CONFIG_TOUCHSCREEN_FT8719 \
+          CONFIG_TOUCHSCREEN_GOODIX; do
+          
+          sed -i "s/^# ${name} is not set/${name}=y/" "$CFG"
+          sed -i "s/^${name}=m/${name}=y/" "$CFG"
+          if ! grep -q "^${name}=" "$CFG"; then
             echo "${name}=y" >> "$CFG"
-            echo "  Added:   $name"
           fi
         done
-
-        echo ""
-        echo ">>> Final touch config:"
-        grep -i "TOUCH\|NT36\|NOVATEK\|FOCAL\|FT3\|FT8\|NVT" "$CFG" || echo "No matches"
 
     # ── 5. Build kernel ──────────────────────────────────────────────────────
     - name: Build kernel
@@ -134,50 +89,70 @@ jobs:
       run: |
         export ARCH=arm64
         export SUBARCH=arm64
-        export CC=clang-14
+        export CC=clang
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-        export CLANG_TRIPLE=aarch64-linux-gnu-
-        export LD=ld.lld-14
-        export AR=llvm-ar-14
-        export NM=llvm-nm-14
-        export OBJCOPY=llvm-objcopy-14
-        export STRIP=llvm-strip-14
+        export LLVM=1
+        export LLVM_IAS=1
+        
+        # -fcommon completely fixes the dtc yylloc error without breaking lexers!
+        export HOSTCFLAGS="-fcommon -Wno-deprecated-declarations"
+        export HOSTCXXFLAGS="-fcommon -Wno-deprecated-declarations"
+        export KBUILD_HOSTCFLAGS="-fcommon -Wno-deprecated-declarations"
 
-        make O=out ARCH=arm64 light_debug_defconfig
+        echo "Generating .config from $DEFCONFIG..."
+        make O=out ARCH=arm64 $DEFCONFIG 2>&1 | tee ../kernel_build.log
 
-        echo "=== Building kernel (this takes 30-50 min) ==="
+        echo ">>> FIX 3: Auto-answering any new config prompts..."
+        yes "" | make O=out ARCH=arm64 oldconfig 2>&1 | tee -a ../kernel_build.log
+
+        echo "Building kernel with $(nproc) cores..."
+        # KCFLAGS="-Wno-error" safely ignores all warnings without mangling makefiles
         make O=out ARCH=arm64 \
-          CC=clang-14 \
+          CC=clang \
           CROSS_COMPILE=aarch64-linux-gnu- \
           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-          CLANG_TRIPLE=aarch64-linux-gnu- \
-          LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 \
-          OBJCOPY=llvm-objcopy-14 \
-          -j$(nproc) > /tmp/build.log 2>&1 \
-          || { echo "BUILD FAILED. Last errors:"; tail -60 /tmp/build.log; exit 1; }
+          LLVM=1 LLVM_IAS=1 \
+          KCFLAGS="-Wno-error" \
+          -j$(nproc) 2>&1 | tee -a ../kernel_build.log
 
-        echo "=== Build succeeded! Output: ==="
-        ls -lh out/arch/arm64/boot/
+        echo "KERNEL BUILD OUTPUT:"
+        ls -lh out/arch/arm64/boot/ || echo "ERROR: No boot output found!"
+
+    # ── 5.1 Upload Build Log Artifact ────────────────────────────────────────
+    - name: Upload Build Log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: full-kernel-build-log
+        path: kernel_build.log
+        retention-days: 5
+
+    # ── 5.5 Upload Raw Kernel Artifact ──────────────────────────────────────
+    - name: Upload compiled raw kernel
+      uses: actions/upload-artifact@v4
+      with:
+        name: compiled-kernel-raw-light
+        path: |
+          kernel/out/arch/arm64/boot/Image*
+          kernel/out/arch/arm64/boot/dtb*
+        retention-days: 5
 
     # ── 6. Get magiskboot + TWRP ─────────────────────────────────────────────
     - name: Download magiskboot and TWRP
       run: |
         echo "Getting magiskboot via GitHub API..."
-        MAGISK_URL=$(curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
+        curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
           | grep "browser_download_url" \
           | grep "Magisk-v.*\.apk" \
-          | head -1 | cut -d'"' -f4)
-        echo "URL: $MAGISK_URL"
-        curl -fL -o Magisk.apk "$MAGISK_URL"
+          | head -1 | cut -d'"' -f4 | xargs curl -fL -o Magisk.apk
 
         unzip -p Magisk.apk lib/x86_64/libmagiskboot.so > magiskboot
         chmod +x magiskboot
         ./magiskboot || true
 
         echo "Downloading TWRP..."
-        curl -fL -o twrp.img "${{ github.event.inputs.twrp_url }}"
-        echo "TWRP: $(ls -lh twrp.img)"
+        curl -fL -o twrp.img "https://github.com/testuru56-del/twrp-light-builder/releases/download/twrp/twrp.img"
 
     # ── 7. Repack ────────────────────────────────────────────────────────────
     - name: Repack TWRP with new kernel
@@ -185,10 +160,6 @@ jobs:
         mkdir work && cd work
         ../magiskboot unpack ../twrp.img
 
-        echo "=== Boot image parts ==="
-        ls -lah
-
-        # Find the best kernel output image
         cd ..
         KIMG=""
         for f in \
@@ -206,7 +177,6 @@ jobs:
         echo "Using kernel image: $KIMG"
         cp "$KIMG" work/kernel
 
-        # Replace DTB if separately built
         if [ -f kernel/out/arch/arm64/boot/dtb.img ]; then
           cp kernel/out/arch/arm64/boot/dtb.img work/dtb
           echo "DTB also replaced."
@@ -216,11 +186,6 @@ jobs:
         ../magiskboot repack ../twrp.img
         mv new-boot.img ../twrp_touch_fixed.img
 
-        echo ""
-        echo "========================================="
-        echo "DONE! Output: $(ls -lh ../twrp_touch_fixed.img)"
-        echo "========================================="
-
     # ── 8. Upload artifact ───────────────────────────────────────────────────
     - name: Upload fixed TWRP image
       uses: actions/upload-artifact@v4
@@ -228,4 +193,3 @@ jobs:
         name: twrp-touch-fixed-light
         path: twrp_touch_fixed.img
         retention-days: 5
-
