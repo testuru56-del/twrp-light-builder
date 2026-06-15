@@ -11,7 +11,8 @@ on:
 jobs:
   build:
     name: Build Kernel + Repack TWRP
-    runs-on: ubuntu-22.04
+    # FIX 1: OS Changed to ubuntu-20.04 to fix OpenSSL 3.0 / extract-cert compile errors
+    runs-on: ubuntu-20.04 
     timeout-minutes: 120
 
     steps:
@@ -38,79 +39,58 @@ jobs:
         echo "Done. Kernel source size:"
         du -sh kernel
 
-    # ── 3. Set Config (FIX 1: Direct light_defconfig) ───────────────────────
-    - name: Set defconfig and check touch drivers
+    # ── 3. Set Config ───────────────────────────────────────────────────────
+    - name: Set defconfig
       id: discover
       working-directory: kernel
       run: |
-        # Hardcoding exact config to avoid choosing light_debug_defconfig
         DEFCONFIG="light_defconfig"
-
         echo "========================================="
         echo "USING DEFCONFIG: $DEFCONFIG"
         echo "========================================="
         echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
 
-        echo ""
-        echo "========================================="
-        echo "TOUCH DRIVERS IN SOURCE:"
-        echo "========================================="
-        ls drivers/input/touchscreen/ | \
-          grep -Ei "nt|nova|focal|ft3|ft8|touch" || \
-          ls drivers/input/touchscreen/
-
-        echo ""
-        echo "========================================="
-        echo "TOUCH CONFIG IN DEFCONFIG:"
-        echo "========================================="
-        grep -i "TOUCH\|NT36\|NOVATEK\|FOCAL\|FT3\|FT8\|NVT" \
-          arch/arm64/configs/$DEFCONFIG || \
-          echo "No touch entries found!"
-
-    # ── 4. Patch defconfig ───────────────────────────────────────────────────
-    - name: Patch defconfig - Enable NT36XXX, Disable FocalTech
+    # ── 4. Patch defconfig (Enable All Major Touch Drivers) ──────────────────
+    - name: Patch defconfig - Enable NVT and others
       working-directory: kernel
       run: |
         CFG="arch/arm64/configs/$DEFCONFIG"
 
-        echo ">>> Disabling FocalTech drivers..."
-        for name in \
-          CONFIG_TOUCHSCREEN_FOCAL_FT3658U \
-          CONFIG_TOUCHSCREEN_FOCAL_FT8722 \
-          CONFIG_TOUCHSCREEN_FTS \
-          CONFIG_TOUCHSCREEN_FOCALTECH_FTS \
-          CONFIG_TOUCHSCREEN_FOCALTECH \
-          CONFIG_TOUCHSCREEN_FT8719; do
-          if grep -q "^${name}=y" "$CFG"; then
-            sed -i "s/^${name}=y/# ${name} is not set/" "$CFG"
-            echo "  Disabled: $name"
-          fi
-        done
-
-        echo ""
-        echo ">>> Enabling Novatek NT36XXX drivers..."
+        echo ">>> Enabling Touch Drivers (NVT, FocalTech, Goodix) as built-in (=y)..."
         for name in \
           CONFIG_TOUCHSCREEN_NT36XXX \
           CONFIG_TOUCHSCREEN_NT36523 \
           CONFIG_TOUCHSCREEN_NT36672A \
           CONFIG_TOUCHSCREEN_NT36XXX_MTK \
           CONFIG_TOUCHSCREEN_NVT_NT36XXX \
-          CONFIG_TOUCHSCREEN_NT36xxx; do
-          if grep -q "^# ${name} is not set" "$CFG"; then
-            sed -i "s/^# ${name} is not set/${name}=y/" "$CFG"
-            echo "  Enabled: $name"
-          elif ! grep -q "$name" "$CFG"; then
+          CONFIG_TOUCHSCREEN_NT36xxx \
+          CONFIG_TOUCHSCREEN_FOCAL_FT3658U \
+          CONFIG_TOUCHSCREEN_FOCAL_FT8722 \
+          CONFIG_TOUCHSCREEN_FTS \
+          CONFIG_TOUCHSCREEN_FOCALTECH_FTS \
+          CONFIG_TOUCHSCREEN_FOCALTECH \
+          CONFIG_TOUCHSCREEN_FT8719 \
+          CONFIG_TOUCHSCREEN_GOODIX; do
+          
+          # Agar disabled hai, toh enable karo
+          sed -i "s/^# ${name} is not set/${name}=y/" "$CFG"
+          # Agar module (=m) hai, toh built-in (=y) karo
+          sed -i "s/^${name}=m/${name}=y/" "$CFG"
+          
+          # Agar file mein hai hi nahi, toh add kardo
+          if ! grep -q "^${name}=" "$CFG"; then
             echo "${name}=y" >> "$CFG"
-            echo "  Added:   $name"
+            echo "  Added and Enabled: $name"
+          else
+            echo "  Enabled/Verified: $name"
           fi
         done
 
         echo ""
-        echo ">>> Final touch config:"
-        grep -i "TOUCH\|NT36\|NOVATEK\|FOCAL\|FT3\|FT8\|NVT" "$CFG" || \
-          echo "No matches"
+        echo ">>> Final touch config check:"
+        grep -i "TOUCH\|NT36\|NOVATEK\|FOCAL\|FT3\|FT8\|NVT\|GOODIX" "$CFG" || echo "No matches"
 
-    # ── 5. Build kernel (FIX 2: Removed tail -200) ───────────────────────────
+    # ── 5. Build kernel ──────────────────────────────────────────────────────
     - name: Build kernel
       working-directory: kernel
       run: |
@@ -130,7 +110,6 @@ jobs:
         make O=out ARCH=arm64 $DEFCONFIG
 
         echo "Building kernel with $(nproc) cores..."
-        # Piped tail removed so that if compilation fails, the step stops here immediately
         make O=out ARCH=arm64 \
           CC=clang-14 \
           CROSS_COMPILE=aarch64-linux-gnu- \
@@ -140,12 +119,18 @@ jobs:
           OBJCOPY=llvm-objcopy-14 \
           -j$(nproc)
 
-        echo ""
-        echo "========================================="
         echo "KERNEL BUILD OUTPUT:"
-        echo "========================================="
-        ls -lh out/arch/arm64/boot/ || \
-          echo "ERROR: No boot output found!"
+        ls -lh out/arch/arm64/boot/ || echo "ERROR: No boot output found!"
+
+    # ── 5.5 Upload Raw Kernel Artifact ──────────────────────────────────────
+    - name: Upload compiled raw kernel
+      uses: actions/upload-artifact@v4
+      with:
+        name: compiled-kernel-raw-light
+        path: |
+          kernel/out/arch/arm64/boot/Image*
+          kernel/out/arch/arm64/boot/dtb*
+        retention-days: 5
 
     # ── 6. Get magiskboot + TWRP ─────────────────────────────────────────────
     - name: Download magiskboot and TWRP
@@ -155,7 +140,6 @@ jobs:
           | grep "browser_download_url" \
           | grep "Magisk-v.*\.apk" \
           | head -1 | cut -d'"' -f4)
-        echo "URL: $MAGISK_URL"
         curl -fL -o Magisk.apk "$MAGISK_URL"
 
         unzip -p Magisk.apk lib/x86_64/libmagiskboot.so > magiskboot
@@ -164,7 +148,6 @@ jobs:
 
         echo "Downloading TWRP..."
         curl -fL -o twrp.img "${{ github.event.inputs.twrp_url }}"
-        echo "TWRP: $(ls -lh twrp.img)"
 
     # ── 7. Repack ────────────────────────────────────────────────────────────
     - name: Repack TWRP with new kernel
@@ -172,10 +155,6 @@ jobs:
         mkdir work && cd work
         ../magiskboot unpack ../twrp.img
 
-        echo "=== Boot image parts ==="
-        ls -lah
-
-        # Find the best kernel output image
         cd ..
         KIMG=""
         for f in \
@@ -193,7 +172,6 @@ jobs:
         echo "Using kernel image: $KIMG"
         cp "$KIMG" work/kernel
 
-        # Replace DTB if separately built
         if [ -f kernel/out/arch/arm64/boot/dtb.img ]; then
           cp kernel/out/arch/arm64/boot/dtb.img work/dtb
           echo "DTB also replaced."
@@ -203,11 +181,6 @@ jobs:
         ../magiskboot repack ../twrp.img
         mv new-boot.img ../twrp_touch_fixed.img
 
-        echo ""
-        echo "========================================="
-        echo "DONE! Output: $(ls -lh ../twrp_touch_fixed.img)"
-        echo "========================================="
-
     # ── 8. Upload artifact ───────────────────────────────────────────────────
     - name: Upload fixed TWRP image
       uses: actions/upload-artifact@v4
@@ -215,4 +188,3 @@ jobs:
         name: twrp-touch-fixed-light
         path: twrp_touch_fixed.img
         retention-days: 5
-
