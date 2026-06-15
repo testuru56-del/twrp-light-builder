@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       twrp_url:
-        description: 'Direct download URL for your TWRP boot.img'
+        description: 'https://github.com/testuru56-del/twrp-light-builder/releases/download/twrp/twrp.img'
         required: true
         default: ''
 
