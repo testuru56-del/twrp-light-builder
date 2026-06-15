@@ -15,7 +15,6 @@ jobs:
     - name: Install build tools
       run: |
         sudo apt-get update -qq
-        # FIX: Removed -14 suffix so exact names like ld.lld and llvm-objdump are available
         sudo apt-get install -y \
           git make bc bison flex cpio zip unzip curl wget python3 \
           libssl-dev libelf-dev \
@@ -55,11 +54,7 @@ jobs:
         echo "" > drivers/mihw/Makefile
         sed -i 's/obj-$(CONFIG_MI_HARDWARE) += mihw.o//g' drivers/Makefile || true
 
-        echo ">>> FIX 2: Safely fixing Compiler Warnings (=return-type issue)..."
-        find . -type f \( -name "Makefile" -o -name "*.mk" \) -exec sed -i 's/-Werror/-Wno-error/g' {} +
-        
-        sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/g' scripts/dtc/dtc-lexer.lex.c_shipped || true
-        
+        echo ">>> FIX 2: Kill Module Signing & Certificates (Fixes extract-cert)..."
         sed -i 's/CONFIG_MODULE_SIG=y/# CONFIG_MODULE_SIG is not set/g' "$CFG" || true
         sed -i 's/CONFIG_MODULE_SIG_ALL=y/# CONFIG_MODULE_SIG_ALL is not set/g' "$CFG" || true
         sed -i 's/CONFIG_SYSTEM_TRUSTED_KEYS.*/CONFIG_SYSTEM_TRUSTED_KEYS=""/g' "$CFG" || true
@@ -100,46 +95,28 @@ jobs:
         export LLVM=1
         export LLVM_IAS=1
         
-        export HOSTCFLAGS="-Wno-deprecated-declarations"
-        export HOSTCXXFLAGS="-Wno-deprecated-declarations"
-        export KBUILD_HOSTCFLAGS="-Wno-deprecated-declarations"
+        export HOSTCFLAGS="-fcommon -Wno-deprecated-declarations"
+        export HOSTCXXFLAGS="-fcommon -Wno-deprecated-declarations"
+        export KBUILD_HOSTCFLAGS="-fcommon -Wno-deprecated-declarations"
 
         echo "Generating .config from $DEFCONFIG..."
-        make O=out ARCH=arm64 $DEFCONFIG 2>&1 | tee ../kernel_build.log
+        make O=out ARCH=arm64 $DEFCONFIG
 
         echo ">>> FIX 3: Auto-answering any new config prompts..."
-        yes "" | make O=out ARCH=arm64 oldconfig 2>&1 | tee -a ../kernel_build.log
+        yes "" | make O=out ARCH=arm64 oldconfig
 
         echo "Building kernel with $(nproc) cores..."
-        # Added tee to save all logs for debugging
+        
         make O=out ARCH=arm64 \
           CC=clang \
           CROSS_COMPILE=aarch64-linux-gnu- \
           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
           LLVM=1 LLVM_IAS=1 \
-          -j$(nproc) 2>&1 | tee -a ../kernel_build.log
+          KCFLAGS="-Wno-error -Wno-unused-but-set-variable -Wno-pointer-to-int-cast -Wno-unused-variable -Wno-strict-prototypes" \
+          -j$(nproc) Image.gz dtbs
 
         echo "KERNEL BUILD OUTPUT:"
         ls -lh out/arch/arm64/boot/ || echo "ERROR: No boot output found!"
-
-    # ── 5.1 Upload Build Log Artifact (Will run even if build fails) ─────────
-    - name: Upload Build Log
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: full-kernel-build-log
-        path: kernel_build.log
-        retention-days: 5
-
-    # ── 5.5 Upload Raw Kernel Artifact ──────────────────────────────────────
-    - name: Upload compiled raw kernel
-      uses: actions/upload-artifact@v4
-      with:
-        name: compiled-kernel-raw-light
-        path: |
-          kernel/out/arch/arm64/boot/Image*
-          kernel/out/arch/arm64/boot/dtb*
-        retention-days: 5
 
     # ── 6. Get magiskboot + TWRP ─────────────────────────────────────────────
     - name: Download magiskboot and TWRP
@@ -157,7 +134,7 @@ jobs:
         echo "Downloading TWRP..."
         curl -fL -o twrp.img "https://github.com/testuru56-del/twrp-light-builder/releases/download/twrp/twrp.img"
 
-    # ── 7. Repack ────────────────────────────────────────────────────────────
+    # ── 7. Repack (THE CRITICAL FIX IS HERE) ─────────────────────────────────
     - name: Repack TWRP with new kernel
       run: |
         mkdir work && cd work
@@ -180,10 +157,14 @@ jobs:
         echo "Using kernel image: $KIMG"
         cp "$KIMG" work/kernel
 
-        if [ -f kernel/out/arch/arm64/boot/dtb.img ]; then
-          cp kernel/out/arch/arm64/boot/dtb.img work/dtb
-          echo "DTB also replaced."
-        fi
+        # =========================================================
+        # FIX: WE ARE NO LONGER REPLACING THE DTB!
+        # Keeping the original TWRP DTB prevents the bootloader crash.
+        # =========================================================
+        # if [ -f kernel/out/arch/arm64/boot/dtb.img ]; then
+        #   cp kernel/out/arch/arm64/boot/dtb.img work/dtb
+        #   echo "DTB also replaced."
+        # fi
 
         cd work
         ../magiskboot repack ../twrp.img
