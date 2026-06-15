@@ -107,14 +107,13 @@ jobs:
 
         echo "Building kernel with $(nproc) cores..."
         
-        # FIX 4: Removed | tee so errors show immediately. 
-        # Added -Wno-pointer-to-int-cast to fix the exact CCCI driver error from the log.
+        # THE FIX: Added -Wno-strict-prototypes to completely bypass the Camera Sensor driver crashes
         make O=out ARCH=arm64 \
           CC=clang \
           CROSS_COMPILE=aarch64-linux-gnu- \
           CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
           LLVM=1 LLVM_IAS=1 \
-          KCFLAGS="-Wno-error -Wno-unused-but-set-variable -Wno-pointer-to-int-cast -Wno-unused-variable" \
+          KCFLAGS="-Wno-error -Wno-unused-but-set-variable -Wno-pointer-to-int-cast -Wno-unused-variable -Wno-strict-prototypes" \
           -j$(nproc) Image.gz dtbs
 
         echo "KERNEL BUILD OUTPUT:"
