@@ -124,23 +124,29 @@ jobs:
     - name: Build TWRP
       working-directory: twrp
       run: |
-        echo "Patching obsolete codes and paths in Device Tree..."
-        # Fix 1: Remove obsolete BOOT_CONTROL_HAL
+        echo "Applying Magic Patches to upgrade Omni DT to TWRP 12.1 DT..."
+        
+        # Patch 1: Remove obsolete boot control HAL
         find device/xiaomi/${{ github.event.inputs.device_code }} -name "*.mk" -exec sed -i 's/PRODUCT_STATIC_BOOT_CONTROL_HAL/# PRODUCT_STATIC_BOOT_CONTROL_HAL/g' {} +
-        # Fix 2: Change vendor/omni to vendor/twrp
+        
+        # Patch 2: Replace vendor/omni with vendor/twrp
         find device/xiaomi/${{ github.event.inputs.device_code }} -name "*.mk" -exec sed -i 's/vendor\/omni/vendor\/twrp/g' {} +
         
+        # Patch 3: Replace omni_light with twrp_light inside files
+        find device/xiaomi/${{ github.event.inputs.device_code }} -name "*.mk" -exec sed -i 's/omni_${{ github.event.inputs.device_code }}/twrp_${{ github.event.inputs.device_code }}/g' {} +
+        
+        # Patch 4: Rename omni_light.mk file to twrp_light.mk (if it exists)
+        if [ -f device/xiaomi/${{ github.event.inputs.device_code }}/omni_${{ github.event.inputs.device_code }}.mk ]; then
+          mv device/xiaomi/${{ github.event.inputs.device_code }}/omni_${{ github.event.inputs.device_code }}.mk device/xiaomi/${{ github.event.inputs.device_code }}/twrp_${{ github.event.inputs.device_code }}.mk
+        fi
+        
+        # Build System
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         
-        if [ -f device/xiaomi/${{ github.event.inputs.device_code }}/omni_${{ github.event.inputs.device_code }}.mk ]; then
-          echo "Found omni_ prefix, lunching..."
-          lunch omni_${{ github.event.inputs.device_code }}-eng
-        else
-          echo "Lunching default twrp_ prefix..."
-          lunch twrp_${{ github.event.inputs.device_code }}-eng
-        fi
-        
+        # Force TWRP standard lunch
+        echo "Lunching twrp_${{ github.event.inputs.device_code }}-eng..."
+        lunch twrp_${{ github.event.inputs.device_code }}-eng
         mka recoveryimage -j$(nproc --all)
 
     # ── 8. Upload Artifact ───────────────────────────────────────────────────
