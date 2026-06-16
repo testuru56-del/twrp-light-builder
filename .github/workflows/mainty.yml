@@ -1,186 +1,109 @@
-name: TWRP Touch Fix - Poco M4 5G (light)
+name: Build TWRP from Source (with Custom Kernel)
 
 on:
   workflow_dispatch:
+    inputs:
+      gdrive_file_id:
+        description: 'Google Drive File ID for Image.gz (e.g. 1AbCdEfG...)'
+        required: true
+        default: ''
+      device_tree_url:
+        description: 'Your TWRP Device Tree GitHub Link'
+        required: true
+        default: 'https://github.com/USERNAME/device_xiaomi_light-twrp'
+      device_tree_branch:
+        description: 'Device Tree Branch'
+        required: true
+        default: 'twrp-12.1'
+      twrp_branch:
+        description: 'TWRP Manifest Branch (e.g. twrp-12.1 or twrp-11)'
+        required: true
+        default: 'twrp-12.1'
+      device_code:
+        description: 'Device Code (e.g. light)'
+        required: true
+        default: 'light'
 
 jobs:
   build:
-    name: Build Kernel + Repack TWRP
+    name: Build TWRP Recovery
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
+    # ── 1. Free up disk space for TWRP build ────────────────────────────────
+    - name: Maximize build space
+      uses: easimon/maximize-build-space@master
+      with:
+        root-reserve-mb: 8192
+        swap-size-mb: 8192
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
 
-    # ── 1. Dependencies ─────────────────────────────────────────────────────
-    - name: Install build tools
+    # ── 2. Install Dependencies & Tools ──────────────────────────────────────
+    - name: Install dependencies
       run: |
         sudo apt-get update -qq
-        sudo apt-get install -y \
-          git make bc bison flex cpio zip unzip curl wget python3 \
-          libssl-dev libelf-dev \
-          clang lld llvm \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-          binutils-aarch64-linux-gnu
+        sudo apt-get install -y git-core gnupg flex bison build-essential zip curl zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 libncurses5 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig python3-pip
+        sudo pip3 install gdown
 
-    # ── 2. Clone kernel source ───────────────────────────────────────────────
-    - name: Clone light-u-oss kernel source
+    # ── 3. Install repo tool ─────────────────────────────────────────────────
+    - name: Install repo
       run: |
-        echo "Cloning Xiaomi kernel source (light-u-oss)..."
-        git clone --depth=1 \
-          -b light-u-oss \
-          https://github.com/MiCode/Xiaomi_Kernel_OpenSource \
-          kernel
-        echo "Done. Kernel source size:"
-        du -sh kernel
+        mkdir -p ~/bin
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        chmod a+x ~/bin/repo
+        echo "$HOME/bin" >> $GITHUB_PATH
 
-    # ── 3. Set Config ───────────────────────────────────────────────────────
-    - name: Set defconfig
-      working-directory: kernel
+    # ── 4. Sync TWRP Minimal Manifest ────────────────────────────────────────
+    - name: Sync TWRP Source
       run: |
-        DEFCONFIG="light_defconfig"
-        echo "========================================="
-        echo "USING DEFCONFIG: $DEFCONFIG"
-        echo "========================================="
-        echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
+        mkdir twrp
+        cd twrp
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.twrp_branch }}
+        repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
 
-    # ── 4. Patch defconfig & Fix Kernel Source ───────────────────────────────
-    - name: Apply Fixes and Enable Touch Drivers
-      working-directory: kernel
+    # ── 5. Clone Device Tree ─────────────────────────────────────────────────
+    - name: Clone Device Tree
+      working-directory: twrp
       run: |
-        CFG="arch/arm64/configs/$DEFCONFIG"
+        git clone -b ${{ github.event.inputs.device_tree_branch }} ${{ github.event.inputs.device_tree_url }} device/xiaomi/${{ github.event.inputs.device_code }}
 
-        echo ">>> FIX 1: Bypass missing 'mihw' vendor files..."
-        mkdir -p drivers/mihw
-        echo "" > drivers/mihw/Makefile
-        sed -i 's/obj-$(CONFIG_MI_HARDWARE) += mihw.o//g' drivers/Makefile || true
-
-        echo ">>> FIX 2: Kill Module Signing & Certificates (Fixes extract-cert)..."
-        sed -i 's/CONFIG_MODULE_SIG=y/# CONFIG_MODULE_SIG is not set/g' "$CFG" || true
-        sed -i 's/CONFIG_MODULE_SIG_ALL=y/# CONFIG_MODULE_SIG_ALL is not set/g' "$CFG" || true
-        sed -i 's/CONFIG_SYSTEM_TRUSTED_KEYS.*/CONFIG_SYSTEM_TRUSTED_KEYS=""/g' "$CFG" || true
-        sed -i 's/CONFIG_SYSTEM_REVOCATION_KEYS.*/CONFIG_SYSTEM_REVOCATION_KEYS=""/g' "$CFG" || true
-
-        echo ">>> Enabling Touch Drivers (NVT, FocalTech, Goodix) as built-in (=y)..."
-        for name in \
-          CONFIG_TOUCHSCREEN_NT36XXX \
-          CONFIG_TOUCHSCREEN_NT36523 \
-          CONFIG_TOUCHSCREEN_NT36672A \
-          CONFIG_TOUCHSCREEN_NT36XXX_MTK \
-          CONFIG_TOUCHSCREEN_NVT_NT36XXX \
-          CONFIG_TOUCHSCREEN_NT36xxx \
-          CONFIG_TOUCHSCREEN_FOCAL_FT3658U \
-          CONFIG_TOUCHSCREEN_FOCAL_FT8722 \
-          CONFIG_TOUCHSCREEN_FTS \
-          CONFIG_TOUCHSCREEN_FOCALTECH_FTS \
-          CONFIG_TOUCHSCREEN_FOCALTECH \
-          CONFIG_TOUCHSCREEN_FT8719 \
-          CONFIG_TOUCHSCREEN_GOODIX; do
-          
-          sed -i "s/^# ${name} is not set/${name}=y/" "$CFG"
-          sed -i "s/^${name}=m/${name}=y/" "$CFG"
-          if ! grep -q "^${name}=" "$CFG"; then
-            echo "${name}=y" >> "$CFG"
-          fi
-        done
-
-    # ── 5. Build kernel ──────────────────────────────────────────────────────
-    - name: Build kernel
-      working-directory: kernel
+    # ── 6. Download Kernel & Replace in Device Tree ──────────────────────────
+    - name: Inject Custom Kernel (Image.gz)
+      working-directory: twrp
       run: |
-        export ARCH=arm64
-        export SUBARCH=arm64
-        export CC=clang
-        export CROSS_COMPILE=aarch64-linux-gnu-
-        export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-        export LLVM=1
-        export LLVM_IAS=1
+        echo "Downloading custom Image.gz from Google Drive..."
+        gdown "https://drive.google.com/uc?id=${{ github.event.inputs.gdrive_file_id }}" -O Image.gz
         
-        export HOSTCFLAGS="-fcommon -Wno-deprecated-declarations"
-        export HOSTCXXFLAGS="-fcommon -Wno-deprecated-declarations"
-        export KBUILD_HOSTCFLAGS="-fcommon -Wno-deprecated-declarations"
-
-        echo "Generating .config from $DEFCONFIG..."
-        make O=out ARCH=arm64 $DEFCONFIG
-
-        echo ">>> FIX 3: Auto-answering any new config prompts..."
-        yes "" | make O=out ARCH=arm64 oldconfig
-
-        echo "Building kernel with $(nproc) cores..."
+        echo "Searching for prebuilt kernel directory in Device Tree..."
+        # Find where the kernel is located in the device tree and replace it
+        KERNEL_PATH=$(find device/xiaomi/${{ github.event.inputs.device_code }} -name "kernel" -o -name "Image.gz" | head -n 1)
         
-        # THE FIX: Added -Wno-strict-prototypes to completely bypass the Camera Sensor driver crashes
-        make O=out ARCH=arm64 \
-          CC=clang \
-          CROSS_COMPILE=aarch64-linux-gnu- \
-          CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-          LLVM=1 LLVM_IAS=1 \
-          KCFLAGS="-Wno-error -Wno-unused-but-set-variable -Wno-pointer-to-int-cast -Wno-unused-variable -Wno-strict-prototypes" \
-          -j$(nproc) Image.gz dtbs
+        if [ -z "$KERNEL_PATH" ]; then
+          echo "WARNING: Could not auto-detect kernel path. Assuming 'prebuilt/kernel'..."
+          KERNEL_PATH="device/xiaomi/${{ github.event.inputs.device_code }}/prebuilt/kernel"
+          mkdir -p $(dirname $KERNEL_PATH)
+        fi
+        
+        echo "Replacing kernel at: $KERNEL_PATH"
+        cp Image.gz $KERNEL_PATH
 
-        echo "KERNEL BUILD OUTPUT:"
-        ls -lh out/arch/arm64/boot/ || echo "ERROR: No boot output found!"
+    # ── 7. Build TWRP ────────────────────────────────────────────────────────
+    - name: Build TWRP
+      working-directory: twrp
+      run: |
+        source build/envsetup.sh
+        lunch twrp_${{ github.event.inputs.device_code }}-eng
+        mka recoveryimage -j$(nproc --all)
 
-    # ── 5.5 Upload Raw Kernel Artifact ──────────────────────────────────────
-    - name: Upload compiled raw kernel
+    # ── 8. Upload Artifact ───────────────────────────────────────────────────
+    - name: Upload TWRP Image
       uses: actions/upload-artifact@v4
       with:
-        name: compiled-kernel-raw-light
-        path: |
-          kernel/out/arch/arm64/boot/Image*
-          kernel/out/arch/arm64/boot/dtb*
-        retention-days: 5
-
-    # ── 6. Get magiskboot + TWRP ─────────────────────────────────────────────
-    - name: Download magiskboot and TWRP
-      run: |
-        echo "Getting magiskboot via GitHub API..."
-        curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
-          | grep "browser_download_url" \
-          | grep "Magisk-v.*\.apk" \
-          | head -1 | cut -d'"' -f4 | xargs curl -fL -o Magisk.apk
-
-        unzip -p Magisk.apk lib/x86_64/libmagiskboot.so > magiskboot
-        chmod +x magiskboot
-        ./magiskboot || true
-
-        echo "Downloading TWRP..."
-        curl -fL -o twrp.img "https://github.com/testuru56-del/twrp-light-builder/releases/download/twrp/twrp.img"
-
-    # ── 7. Repack ────────────────────────────────────────────────────────────
-    - name: Repack TWRP with new kernel
-      run: |
-        mkdir work && cd work
-        ../magiskboot unpack ../twrp.img
-
-        cd ..
-        KIMG=""
-        for f in \
-          kernel/out/arch/arm64/boot/Image.gz-dtb \
-          kernel/out/arch/arm64/boot/Image-dtb \
-          kernel/out/arch/arm64/boot/Image.gz \
-          kernel/out/arch/arm64/boot/Image; do
-          if [ -f "$f" ]; then KIMG="$f"; break; fi
-        done
-
-        if [ -z "$KIMG" ]; then
-          echo "ERROR: No kernel image built!"
-          exit 1
-        fi
-        echo "Using kernel image: $KIMG"
-        cp "$KIMG" work/kernel
-
-        if [ -f kernel/out/arch/arm64/boot/dtb.img ]; then
-          cp kernel/out/arch/arm64/boot/dtb.img work/dtb
-          echo "DTB also replaced."
-        fi
-
-        cd work
-        ../magiskboot repack ../twrp.img
-        mv new-boot.img ../twrp_touch_fixed.img
-
-    # ── 8. Upload artifact ───────────────────────────────────────────────────
-    - name: Upload fixed TWRP image
-      uses: actions/upload-artifact@v4
-      with:
-        name: twrp-touch-fixed-light
-        path: twrp_touch_fixed.img
+        name: TWRP-Custom-Kernel-${{ github.event.inputs.device_code }}
+        path: twrp/out/target/product/${{ github.event.inputs.device_code }}/recovery.img
         retention-days: 5
