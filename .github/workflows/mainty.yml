@@ -34,7 +34,6 @@ jobs:
         unzip -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
         mv libmagiskboot.so magiskboot
         chmod +x magiskboot
-        # Is line se hum magiskboot ko global command bana rahe hain
         sudo mv magiskboot /usr/local/bin/
 
     # ── 3. Download TWRP and Modules.zip (DIRECT LINK) ──────────────────────
@@ -46,7 +45,7 @@ jobs:
         echo "Downloading modules.zip from your GitHub Repo..."
         wget -qO modules.zip "${{ github.event.inputs.modules_url }}"
 
-    # ── 4. Unpack TWRP & Extract Ramdisk ────────────────────────────────────
+    # ── 4. Unpack TWRP & Extract Ramdisk (RAW FORMAT FIX) ───────────────────
     - name: Unpack TWRP & Extract Ramdisk
       run: |
         mkdir work && cd work
@@ -54,9 +53,15 @@ jobs:
         
         echo "Extracting Ramdisk..."
         mkdir ramdisk_extract && cd ramdisk_extract
-        magiskboot decompress ../ramdisk.cpio ramdisk.cpio.tmp
-        cpio -i < ramdisk.cpio.tmp || true
-        rm ramdisk.cpio.tmp
+        
+        if magiskboot decompress ../ramdisk.cpio ramdisk.cpio.tmp; then
+          echo "Ramdisk was compressed. Decompressed successfully."
+          cpio -i < ramdisk.cpio.tmp || true
+          rm ramdisk.cpio.tmp
+        else
+          echo "Ramdisk is already RAW. Extracting directly..."
+          cpio -i < ../ramdisk.cpio || true
+        fi
 
     # ── 5. Inject Touch Drivers (.ko files) ─────────────────────────────────
     - name: Inject Touch Drivers (.ko files)
@@ -94,18 +99,16 @@ jobs:
             start load_touch
         EOF
 
-    # ── 6. Repack Ramdisk & TWRP Image ──────────────────────────────────────
+    # ── 6. Repack Ramdisk & TWRP Image (SMART COMPRESSION FIX) ──────────────
     - name: Repack Ramdisk & Final TWRP Image
       run: |
         echo "Repacking Ramdisk..."
         cd work/ramdisk_extract
-        find . | cpio -o -H newc > ../ramdisk.cpio.uncompressed
+        find . | cpio -o -H newc > ../ramdisk.cpio
         cd ..
         
-        echo "Compressing Ramdisk..."
-        magiskboot compress=gzip ramdisk.cpio.uncompressed ramdisk.cpio
-        
         echo "Repacking Final TWRP Image..."
+        # Magiskboot auto-detects original format (RAW/GZIP) and applies it!
         magiskboot repack ../twrp.img ../twrp_touch_fixed_final.img
 
     # ── 7. Upload Final Artifact ─────────────────────────────────────────────
