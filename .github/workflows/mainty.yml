@@ -37,17 +37,24 @@ jobs:
         remove-android: 'true'
         remove-haskell: 'true'
 
-    # ── 2. Install Dependencies & Tools (BULLETPROOF METHOD) ────────────────
+    # ── 2. Install Dependencies & Tools (ULTRA BULLETPROOF) ────────────────
     - name: Install dependencies
+      timeout-minutes: 10
       run: |
+        echo "Removing Ubuntu's annoying prompt services..."
+        sudo DEBIAN_FRONTEND=noninteractive apt-get purge -yq needrestart || true
+        
         echo "Freeing up apt locks..."
         sudo killall apt apt-get || true
         sudo rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock
         sudo dpkg --configure -a || true
         
-        echo "Installing packages bypassing all prompts..."
-        sudo DEBIAN_FRONTEND=noninteractive apt-get update -yq
-        sudo DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -yq --no-install-recommends git-core gnupg flex bison build-essential zip curl zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 libncurses5 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig python3-pip
+        echo "Installing packages safely..."
+        sudo apt-get update -yq
+        sudo DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -yq --no-install-recommends \
+          git-core gnupg flex bison build-essential zip curl zlib1g-dev gcc-multilib g++-multilib \
+          libc6-dev-i386 libncurses5 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z1-dev \
+          libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig python3-pip
         
         echo "Installing gdown..."
         sudo pip3 install gdown
@@ -117,15 +124,12 @@ jobs:
     - name: Build TWRP
       working-directory: twrp
       run: |
-        # 1. Fix the obsolete BOOT_CONTROL_HAL error automatically
         echo "Patching obsolete codes in Device Tree..."
         find device/xiaomi/${{ github.event.inputs.device_code }} -name "*.mk" -exec sed -i 's/PRODUCT_STATIC_BOOT_CONTROL_HAL/# PRODUCT_STATIC_BOOT_CONTROL_HAL/g' {} +
         
-        # 2. Setup Environment
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
         
-        # 3. Smart Lunch
         if [ -f device/xiaomi/${{ github.event.inputs.device_code }}/omni_${{ github.event.inputs.device_code }}.mk ]; then
           echo "Found omni_ prefix, lunching..."
           lunch omni_${{ github.event.inputs.device_code }}-eng
@@ -134,7 +138,6 @@ jobs:
           lunch twrp_${{ github.event.inputs.device_code }}-eng
         fi
         
-        # 4. Compile
         mka recoveryimage -j$(nproc --all)
 
     # ── 8. Upload Artifact ───────────────────────────────────────────────────
