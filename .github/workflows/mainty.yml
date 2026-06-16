@@ -26,11 +26,11 @@ jobs:
         sudo apt-get update -yqq
         sudo apt-get install -yqq curl unzip cpio wget
 
-    # ── 3. Download Magiskboot ──────────────────────────────────────────────
+    # ── 3. Download Magiskboot (API BYPASS FIXED) ───────────────────────────
     - name: Download Magiskboot
       run: |
-        echo "Downloading Magiskboot..."
-        curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest | grep "browser_download_url.*apk" | cut -d : -f 2,3 | tr -d \" | wget -qi - -O magisk.apk
+        echo "Downloading Magiskboot v27.0 directly..."
+        wget -qO magisk.apk "https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk"
         unzip -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
         mv libmagiskboot.so magiskboot
         chmod +x magiskboot
