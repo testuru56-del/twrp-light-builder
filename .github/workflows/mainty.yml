@@ -67,8 +67,11 @@ jobs:
         cd ..
         magiskboot repack ../twrp.img ../twrp_touch_final.img
 
-    - name: Upload
+        # ── 7. Upload Final Artifact (CORRECTED PATH) ─────────────────────────────
+    - name: Upload Final TWRP
       uses: actions/upload-artifact@v4
       with:
         name: TWRP-Touch-Fixed-Final
-        path: work/twrp_touch_final.img
+        path: twrp_touch_final.img
+        retention-days: 5
+
