@@ -1,21 +1,21 @@
-name: Inject Touch Drivers into Prebuilt TWRP
+name: Swap Kernel in Prebuilt TWRP
 
 on:
   workflow_dispatch:
     inputs:
       twrp_url:
-        description: 'Direct URL to your Bootable TWRP.img'
+        description: 'Direct URL to Bootable TWRP (No Touch)'
         required: true
         default: 'https://github.com/testuru56-del/twrp-light-builder/releases/download/twrp/twrp.img'
-      modules_url:
-        description: 'Direct URL to modules.zip'
+      stock_boot_url:
+        description: 'Direct URL to Stock boot.img or recovery.img'
         required: true
-        default: 'https://github.com/testuru56-del/twrp-light-builder/raw/main/modules.zip'
+        default: 'LINK_YAHA_DAALEIN'
 
 jobs:
-  inject_drivers:
+  swap_kernel:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     
     steps:
     # ── 1. Install Dependencies ─────────────────────────────────────────────
@@ -24,7 +24,7 @@ jobs:
         DEBIAN_FRONTEND: noninteractive
       run: |
         sudo apt-get update -yqq
-        sudo apt-get install -yqq curl unzip cpio wget
+        sudo apt-get install -yqq curl unzip wget
 
     # ── 2. Download Magiskboot (Global Install) ─────────────────────────────
     - name: Download Magiskboot
@@ -36,85 +36,40 @@ jobs:
         chmod +x magiskboot
         sudo mv magiskboot /usr/local/bin/
 
-    # ── 3. Download TWRP and Modules.zip (DIRECT LINK) ──────────────────────
-    - name: Download TWRP and Modules
+    # ── 3. Download TWRP and Stock Boot ─────────────────────────────────────
+    - name: Download Images
       run: |
         echo "Downloading TWRP image..."
         wget -qO twrp.img "${{ github.event.inputs.twrp_url }}"
         
-        echo "Downloading modules.zip from your GitHub Repo..."
-        wget -qO modules.zip "${{ github.event.inputs.modules_url }}"
+        echo "Downloading Stock Boot/Recovery image..."
+        wget -qO stock_boot.img "${{ github.event.inputs.stock_boot_url }}"
 
-    # ── 4. Unpack TWRP & Extract Ramdisk (RAW FORMAT FIX) ───────────────────
-    - name: Unpack TWRP & Extract Ramdisk
+    # ── 4. Unpack Images & Swap Kernel ──────────────────────────────────────
+    - name: Unpack & Swap
       run: |
-        mkdir work && cd work
-        magiskboot unpack ../twrp.img
-        
-        echo "Extracting Ramdisk..."
-        mkdir ramdisk_extract && cd ramdisk_extract
-        
-        if magiskboot decompress ../ramdisk.cpio ramdisk.cpio.tmp; then
-          echo "Ramdisk was compressed. Decompressed successfully."
-          cpio -i < ramdisk.cpio.tmp || true
-          rm ramdisk.cpio.tmp
-        else
-          echo "Ramdisk is already RAW. Extracting directly..."
-          cpio -i < ../ramdisk.cpio || true
-        fi
-
-    # ── 5. Inject Touch Drivers (.ko files) ─────────────────────────────────
-    - name: Inject Touch Drivers (.ko files)
-      run: |
-        cd work/ramdisk_extract
-        mkdir -p lib/modules
-        
-        echo "Extracting .ko files into Ramdisk..."
-        unzip -j ../../modules.zip -d lib/modules/
-        
-        # Confirm drivers are extracted
-        KO_COUNT=$(ls -1 lib/modules/*.ko 2>/dev/null | wc -l)
-        if [ "$KO_COUNT" -eq "0" ]; then
-           echo "ERROR: ZIP file download hui, par uske andar koi .ko file nahi mili!"
-           exit 1
-        fi
-        echo "Successfully injected $KO_COUNT driver files!"
-        
-        echo "Creating auto-load script for Touch..."
-        echo '#!/system/bin/sh' > load_touch.sh
-        echo 'for m in /lib/modules/*.ko; do insmod $m; done' >> load_touch.sh
-        chmod +x load_touch.sh
-        
-        echo "Triggering script on TWRP boot in init.rc..."
-        cat << 'EOF' >> init.rc
-
-        service load_touch /system/bin/sh /load_touch.sh
-            user root
-            group root
-            disabled
-            oneshot
-            seclabel u:r:recovery:s0
-
-        on boot
-            start load_touch
-        EOF
-
-    # ── 6. Repack Ramdisk & TWRP Image (SMART COMPRESSION FIX) ──────────────
-    - name: Repack Ramdisk & Final TWRP Image
-      run: |
-        echo "Repacking Ramdisk..."
-        cd work/ramdisk_extract
-        find . | cpio -o -H newc > ../ramdisk.cpio
+        echo "Unpacking Stock Image..."
+        mkdir stock_extract && cd stock_extract
+        magiskboot unpack ../stock_boot.img
         cd ..
         
-        echo "Repacking Final TWRP Image..."
-        # Magiskboot auto-detects original format (RAW/GZIP) and applies it!
-        magiskboot repack ../twrp.img ../twrp_touch_fixed_final.img
+        echo "Unpacking TWRP Image..."
+        mkdir twrp_extract && cd twrp_extract
+        magiskboot unpack ../twrp.img
+        
+        echo "Swapping Kernel and Device Tree (DTB)..."
+        # Copying the real working kernel and DTB from Stock to TWRP
+        cp -f ../stock_extract/kernel . || echo "Warning: No kernel found in stock"
+        cp -f ../stock_extract/dtb . || echo "Warning: No dtb found in stock"
+        cp -f ../stock_extract/dtbo.img . || echo "Warning: No dtbo found in stock"
+        
+        echo "Repacking Final TWRP with Stock Kernel..."
+        magiskboot repack ../twrp.img ../twrp_kernel_swapped.img
 
-    # ── 7. Upload Final Artifact ─────────────────────────────────────────────
+    # ── 5. Upload Final Artifact ────────────────────────────────────────────
     - name: Upload Final TWRP
       uses: actions/upload-artifact@v4
       with:
-        name: TWRP-Ramdisk-Injected-Light
-        path: twrp_touch_fixed_final.img
+        name: TWRP-Kernel-Swapped
+        path: twrp_kernel_swapped.img
         retention-days: 5
