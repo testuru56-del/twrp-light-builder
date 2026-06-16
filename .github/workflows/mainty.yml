@@ -73,20 +73,19 @@ jobs:
         mkdir dt_temp
         unzip -q dt.zip -d dt_temp
         
-        # Determine if the zip has a single root folder or loose files
-        ROOT_DIRS=$(ls -1 dt_temp | wc -l)
-        mkdir -p device/xiaomi/${{ github.event.inputs.device_code }}
+        echo "Smart locating Device Tree root..."
+        DT_ROOT=$(find dt_temp -name "AndroidProducts.mk" -exec dirname {} \;)
         
-        if [ "$ROOT_DIRS" -eq "1" ]; then
-          # If extracted to a single folder, move its contents
-          mv dt_temp/*/* device/xiaomi/${{ github.event.inputs.device_code }}/
-        else
-          # If loose files, move directly
-          mv dt_temp/* device/xiaomi/${{ github.event.inputs.device_code }}/
+        if [ -z "$DT_ROOT" ]; then
+          echo "ERROR: AndroidProducts.mk not found in the ZIP!"
+          exit 1
         fi
         
+        mkdir -p device/xiaomi/${{ github.event.inputs.device_code }}
+        mv $DT_ROOT/* device/xiaomi/${{ github.event.inputs.device_code }}/
+        
         rm -rf dt_temp dt.zip
-        echo "Device tree successfully placed in device/xiaomi/${{ github.event.inputs.device_code }}"
+        echo "Device tree successfully placed!"
 
     # ── 6. Download Kernel & Replace in Device Tree ──────────────────────────
     - name: Inject Custom Kernel (Image.gz)
@@ -95,8 +94,6 @@ jobs:
         echo "Downloading custom Image.gz from Google Drive..."
         gdown "https://drive.google.com/uc?id=${{ github.event.inputs.gdrive_image_id }}" -O Image.gz
         
-        echo "Searching for prebuilt kernel directory in Device Tree..."
-        # Find exactly where the existing kernel is located
         KERNEL_PATH=$(find device/xiaomi/${{ github.event.inputs.device_code }} -type f \( -name "kernel" -o -name "Image.gz" \) | head -n 1)
         
         if [ -z "$KERNEL_PATH" ]; then
@@ -114,7 +111,15 @@ jobs:
       run: |
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
-        lunch twrp_${{ github.event.inputs.device_code }}-eng
+        
+        if [ -f device/xiaomi/${{ github.event.inputs.device_code }}/omni_${{ github.event.inputs.device_code }}.mk ]; then
+          echo "Found omni_ prefix, lunching..."
+          lunch omni_${{ github.event.inputs.device_code }}-eng
+        else
+          echo "Lunching default twrp_ prefix..."
+          lunch twrp_${{ github.event.inputs.device_code }}-eng
+        fi
+        
         mka recoveryimage -j$(nproc --all)
 
     # ── 8. Upload Artifact ───────────────────────────────────────────────────
