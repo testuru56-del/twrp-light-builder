@@ -4,13 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       twrp_url:
-        description: 'Direct URL to TWRP.img'
+        description: 'Direct URL to your Bootable TWRP.img'
         required: true
         default: 'https://github.com/testuru56-del/twrp-light-builder/releases/download/twrp/twrp.img'
-      ko_zip_id:
-        description: 'Google Drive File ID for .ko ZIP'
-        required: true
-        default: '1PnkYvxIToWPd8B2YCzdLEoW8wzZBJxuP'
 
 jobs:
   inject_drivers:
@@ -18,16 +14,19 @@ jobs:
     timeout-minutes: 30
     
     steps:
-    # ── 1. Install Dependencies ─────────────────────────────────────────────
+    # ── 1. Fetch Repository Files (Gets your modules.zip) ──────────────
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    # ── 2. Install Dependencies ─────────────────────────────────────────────
     - name: Install dependencies
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
         sudo apt-get update -yqq
-        sudo apt-get install -yqq curl unzip cpio wget python3-pip
-        sudo pip3 install gdown
+        sudo apt-get install -yqq curl unzip cpio wget
 
-    # ── 2. Download Magiskboot ──────────────────────────────────────────────
+    # ── 3. Download Magiskboot ──────────────────────────────────────────────
     - name: Download Magiskboot
       run: |
         echo "Downloading Magiskboot..."
@@ -36,16 +35,13 @@ jobs:
         mv libmagiskboot.so magiskboot
         chmod +x magiskboot
 
-    # ── 3. Download User Files ──────────────────────────────────────────────
-    - name: Download TWRP and Drivers
+    # ── 4. Download TWRP ────────────────────────────────────────────────────
+    - name: Download TWRP image
       run: |
         echo "Downloading TWRP image..."
         wget -O twrp.img "${{ github.event.inputs.twrp_url }}"
-        
-        echo "Downloading .ko modules from GDrive..."
-        gdown "https://drive.google.com/uc?id=${{ github.event.inputs.ko_zip_id }}" -O modules.zip
 
-    # ── 4. Unpack TWRP & Extract Ramdisk ────────────────────────────────────
+    # ── 5. Unpack TWRP & Extract Ramdisk ────────────────────────────────────
     - name: Unpack TWRP & Extract Ramdisk
       run: |
         mkdir work && cd work
@@ -57,7 +53,7 @@ jobs:
         cpio -i < ramdisk.cpio.tmp || true
         rm ramdisk.cpio.tmp
 
-    # ── 5. Inject Touch Drivers (.ko files) & Auto-Load Script ──────────────
+    # ── 6. Inject Touch Drivers (.ko files) ─────────────────────────────────
     - name: Inject Touch Drivers (.ko files)
       run: |
         cd work/ramdisk_extract
@@ -66,6 +62,7 @@ jobs:
         mkdir -p lib/modules
         
         echo "Extracting .ko files into Ramdisk..."
+        # Extracting the modules.zip directly from your GitHub repo!
         unzip -j ../../modules.zip -d lib/modules/
         
         echo "Creating auto-load script for Touch..."
@@ -87,7 +84,7 @@ jobs:
             start load_touch
         EOF
 
-    # ── 6. Repack Ramdisk & TWRP Image ──────────────────────────────────────
+    # ── 7. Repack Ramdisk & TWRP Image ──────────────────────────────────────
     - name: Repack Ramdisk & Final TWRP Image
       run: |
         echo "Repacking Ramdisk..."
@@ -101,11 +98,10 @@ jobs:
         echo "Repacking Final TWRP Image..."
         ../magiskboot repack ../twrp.img ../twrp_touch_fixed_final.img
 
-    # ── 7. Upload Final Artifact ─────────────────────────────────────────────
+    # ── 8. Upload Final Artifact ─────────────────────────────────────────────
     - name: Upload Final TWRP
       uses: actions/upload-artifact@v4
       with:
         name: TWRP-Ramdisk-Injected-Light
         path: twrp_touch_fixed_final.img
         retention-days: 5
-
