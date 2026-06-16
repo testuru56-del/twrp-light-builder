@@ -1,151 +1,111 @@
-name: Build TWRP from Source (GDrive DT + Kernel)
+name: Inject Touch Drivers into Prebuilt TWRP
 
 on:
   workflow_dispatch:
     inputs:
-      gdrive_dt_id:
-        description: 'Google Drive File ID for Device Tree (Zip)'
+      twrp_url:
+        description: 'Direct URL to TWRP.img'
         required: true
-        default: '1sFPej0CMygMOKG2Pe8oFn-nCL1kJGr0Y'
-      gdrive_image_id:
-        description: 'Google Drive File ID for Image.gz (Kernel)'
+        default: 'https://github.com/testuru56-del/twrp-light-builder/releases/download/twrp/twrp.img'
+      ko_zip_id:
+        description: 'Google Drive File ID for .ko ZIP'
         required: true
-        default: '1aJ2zYR9fxNThSj7pyt1saZxJY5a-wYUe'
-      twrp_branch:
-        description: 'TWRP Manifest Branch (e.g., twrp-12.1 or twrp-11)'
-        required: true
-        default: 'twrp-12.1'
-      device_code:
-        description: 'Device Code (e.g., light)'
-        required: true
-        default: 'light'
+        default: '1PnkYvxIToWPd8B2YCzdLEoW8wzZBJxuP'
 
 jobs:
-  build:
-    name: Build TWRP Recovery
+  inject_drivers:
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
-
+    timeout-minutes: 30
+    
     steps:
-    # ── 1. Free up disk space for TWRP build ────────────────────────────────
-    - name: Maximize build space
-      uses: easimon/maximize-build-space@master
-      with:
-        root-reserve-mb: 8192
-        swap-size-mb: 8192
-        remove-dotnet: 'true'
-        remove-android: 'true'
-        remove-haskell: 'true'
-
-    # ── 2. Install Dependencies & Tools (KILLING ALL BACKGROUND UPDATES) ────
+    # ── 1. Install Dependencies ─────────────────────────────────────────────
     - name: Install dependencies
-      timeout-minutes: 10
+      env:
+        DEBIAN_FRONTEND: noninteractive
       run: |
-        echo "Stopping Ubuntu's background auto-updates that lock the server..."
-        sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service || true
-        sudo systemctl disable apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service || true
-        
-        echo "Force killing any stuck apt processes..."
-        sudo killall -9 apt apt-get dpkg unattended-upgrades || true
-        sudo rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock
-        sudo dpkg --configure -a || true
-        
-        echo "Installing packages safely..."
         sudo apt-get update -yqq
-        sudo DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -yqq --no-install-recommends \
-          git-core gnupg flex bison build-essential zip curl zlib1g-dev gcc-multilib g++-multilib \
-          libc6-dev-i386 libncurses5 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z1-dev \
-          libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig python3-pip
-        
-        echo "Installing gdown..."
+        sudo apt-get install -yqq curl unzip cpio wget python3-pip
         sudo pip3 install gdown
 
-    # ── 3. Install repo tool ─────────────────────────────────────────────────
-    - name: Install repo
+    # ── 2. Download Magiskboot ──────────────────────────────────────────────
+    - name: Download Magiskboot
       run: |
-        mkdir -p ~/bin
-        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
-        chmod a+x ~/bin/repo
-        echo "$HOME/bin" >> $GITHUB_PATH
+        echo "Downloading Magiskboot..."
+        curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest | grep "browser_download_url.*apk" | cut -d : -f 2,3 | tr -d \" | wget -qi - -O magisk.apk
+        unzip -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
+        mv libmagiskboot.so magiskboot
+        chmod +x magiskboot
 
-    # ── 4. Sync TWRP Minimal Manifest ────────────────────────────────────────
-    - name: Sync TWRP Source
+    # ── 3. Download User Files ──────────────────────────────────────────────
+    - name: Download TWRP and Drivers
       run: |
-        mkdir twrp
-        cd twrp
-        git config --global user.name "GitHub Actions"
-        git config --global user.email "actions@github.com"
-        repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.twrp_branch }}
-        repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
+        echo "Downloading TWRP image..."
+        wget -O twrp.img "${{ github.event.inputs.twrp_url }}"
+        
+        echo "Downloading .ko modules from GDrive..."
+        gdown "https://drive.google.com/uc?id=${{ github.event.inputs.ko_zip_id }}" -O modules.zip
 
-    # ── 5. Download and Extract Device Tree from GDrive ──────────────────────
-    - name: Setup Device Tree
-      working-directory: twrp
+    # ── 4. Unpack TWRP & Extract Ramdisk ────────────────────────────────────
+    - name: Unpack TWRP & Extract Ramdisk
       run: |
-        echo "Downloading Device Tree from Google Drive..."
-        gdown "https://drive.google.com/uc?id=${{ github.event.inputs.gdrive_dt_id }}" -O dt.zip
+        mkdir work && cd work
+        ../magiskboot unpack ../twrp.img
         
-        echo "Extracting Device Tree..."
-        mkdir dt_temp
-        unzip -q dt.zip -d dt_temp
-        
-        echo "Smart locating Device Tree root..."
-        DT_ROOT=$(find dt_temp -name "AndroidProducts.mk" -exec dirname {} \;)
-        
-        if [ -z "$DT_ROOT" ]; then
-          echo "ERROR: AndroidProducts.mk not found in the ZIP!"
-          exit 1
-        fi
-        
-        mkdir -p device/xiaomi/${{ github.event.inputs.device_code }}
-        mv $DT_ROOT/* device/xiaomi/${{ github.event.inputs.device_code }}/
-        
-        rm -rf dt_temp dt.zip
-        echo "Device tree successfully placed!"
+        echo "Extracting Ramdisk..."
+        mkdir ramdisk_extract && cd ramdisk_extract
+        ../magiskboot decompress ../ramdisk.cpio ramdisk.cpio.tmp
+        cpio -i < ramdisk.cpio.tmp || true
+        rm ramdisk.cpio.tmp
 
-    # ── 6. Download Kernel & Replace in Device Tree ──────────────────────────
-    - name: Inject Custom Kernel (Image.gz)
-      working-directory: twrp
+    # ── 5. Inject Touch Drivers (.ko files) & Auto-Load Script ──────────────
+    - name: Inject Touch Drivers (.ko files)
       run: |
-        echo "Downloading custom Image.gz from Google Drive..."
-        gdown "https://drive.google.com/uc?id=${{ github.event.inputs.gdrive_image_id }}" -O Image.gz
+        cd work/ramdisk_extract
         
-        KERNEL_PATH=$(find device/xiaomi/${{ github.event.inputs.device_code }} -type f \( -name "kernel" -o -name "Image.gz" \) | head -n 1)
+        echo "Creating lib/modules directory..."
+        mkdir -p lib/modules
         
-        if [ -z "$KERNEL_PATH" ]; then
-          echo "WARNING: Could not auto-detect kernel path. Placing it in prebuilt/kernel..."
-          KERNEL_PATH="device/xiaomi/${{ github.event.inputs.device_code }}/prebuilt/kernel"
-          mkdir -p $(dirname "$KERNEL_PATH")
-        fi
+        echo "Extracting .ko files into Ramdisk..."
+        unzip -j ../../modules.zip -d lib/modules/
         
-        echo "Replacing kernel at: $KERNEL_PATH"
-        cp Image.gz "$KERNEL_PATH"
+        echo "Creating auto-load script for Touch..."
+        echo '#!/system/bin/sh' > load_touch.sh
+        echo 'for m in /lib/modules/*.ko; do insmod $m; done' >> load_touch.sh
+        chmod +x load_touch.sh
+        
+        echo "Triggering script on TWRP boot in init.rc..."
+        cat << 'EOF' >> init.rc
 
-    # ── 7. Build TWRP ────────────────────────────────────────────────────────
-    - name: Build TWRP
-      working-directory: twrp
+        service load_touch /system/bin/sh /load_touch.sh
+            user root
+            group root
+            disabled
+            oneshot
+            seclabel u:r:recovery:s0
+
+        on boot
+            start load_touch
+        EOF
+
+    # ── 6. Repack Ramdisk & TWRP Image ──────────────────────────────────────
+    - name: Repack Ramdisk & Final TWRP Image
       run: |
-        echo "Applying Precise Patches..."
+        echo "Repacking Ramdisk..."
+        cd work/ramdisk_extract
+        find . | cpio -o -H newc > ../ramdisk.cpio.uncompressed
+        cd ..
         
-        # Patch 1: Remove obsolete boot control HAL
-        find device/xiaomi/${{ github.event.inputs.device_code }} -type f -exec sed -i 's/PRODUCT_STATIC_BOOT_CONTROL_HAL/# PRODUCT_STATIC_BOOT_CONTROL_HAL/g' {} +
+        echo "Compressing Ramdisk..."
+        ../magiskboot compress=gzip ramdisk.cpio.uncompressed ramdisk.cpio
         
-        # Patch 2: ONLY change the vendor folder path, keep omni prefix untouched!
-        find device/xiaomi/${{ github.event.inputs.device_code }} -type f -exec sed -i 's/vendor\/omni/vendor\/twrp/g' {} +
-        
-        # Build System
-        source build/envsetup.sh
-        export ALLOW_MISSING_DEPENDENCIES=true
-        
-        # Lunch with the original omni prefix
-        echo "Lunching omni_${{ github.event.inputs.device_code }}-eng..."
-        lunch omni_${{ github.event.inputs.device_code }}-eng
-        mka recoveryimage -j$(nproc --all)
+        echo "Repacking Final TWRP Image..."
+        ../magiskboot repack ../twrp.img ../twrp_touch_fixed_final.img
 
-    # ── 8. Upload Artifact ───────────────────────────────────────────────────
-    - name: Upload Built TWRP
+    # ── 7. Upload Final Artifact ─────────────────────────────────────────────
+    - name: Upload Final TWRP
       uses: actions/upload-artifact@v4
       with:
-        name: TWRP-SourceBuilt-TouchFixed-${{ github.event.inputs.device_code }}
-        path: twrp/out/target/product/${{ github.event.inputs.device_code }}/recovery.img
+        name: TWRP-Ramdisk-Injected-Light
+        path: twrp_touch_fixed_final.img
         retention-days: 5
+
