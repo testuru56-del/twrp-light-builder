@@ -7,10 +7,10 @@ on:
         description: 'Direct URL to Bootable TWRP (No Touch)'
         required: true
         default: 'https://github.com/testuru56-del/twrp-light-builder/releases/download/twrp/twrp.img'
-      stock_boot_url:
-        description: 'Direct URL to Stock boot.img or recovery.img'
+      stock_boot_id:
+        description: 'Google Drive File ID for Stock boot.img/recovery.img'
         required: true
-        default: 'LINK_YAHA_DAALEIN'
+        default: '1exooTUy9jznqRFHPCIgi7FXyHp7AhuK_'
 
 jobs:
   swap_kernel:
@@ -24,7 +24,8 @@ jobs:
         DEBIAN_FRONTEND: noninteractive
       run: |
         sudo apt-get update -yqq
-        sudo apt-get install -yqq curl unzip wget
+        sudo apt-get install -yqq curl unzip wget python3-pip
+        sudo pip3 install gdown
 
     # ── 2. Download Magiskboot (Global Install) ─────────────────────────────
     - name: Download Magiskboot
@@ -42,8 +43,8 @@ jobs:
         echo "Downloading TWRP image..."
         wget -qO twrp.img "${{ github.event.inputs.twrp_url }}"
         
-        echo "Downloading Stock Boot/Recovery image..."
-        wget -qO stock_boot.img "${{ github.event.inputs.stock_boot_url }}"
+        echo "Downloading Stock Boot/Recovery image from Google Drive..."
+        gdown "https://drive.google.com/uc?id=${{ github.event.inputs.stock_boot_id }}" -O stock_boot.img
 
     # ── 4. Unpack Images & Swap Kernel ──────────────────────────────────────
     - name: Unpack & Swap
