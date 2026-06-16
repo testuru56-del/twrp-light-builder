@@ -1,4 +1,4 @@
-name: Swap Kernel in Prebuilt TWRP
+name: Inject Touch Drivers and Firmware
 
 on:
   workflow_dispatch:
@@ -7,70 +7,68 @@ on:
         description: 'Direct URL to Bootable TWRP (No Touch)'
         required: true
         default: 'https://github.com/testuru56-del/twrp-light-builder/releases/download/twrp/twrp.img'
-      stock_boot_id:
-        description: 'Google Drive File ID for Stock boot.img/recovery.img'
+      modules_url:
+        description: 'Direct URL to modules.zip (Drivers)'
         required: true
-        default: '1exooTUy9jznqRFHPCIgi7FXyHp7AhuK_'
+        default: 'https://github.com/testuru56-del/twrp-light-builder/raw/main/modules.zip'
+      firmware_url:
+        description: 'Direct URL to firmware.zip (Firmware)'
+        required: true
+        default: 'https://github.com/testuru56-del/twrp-light-builder/raw/main/firmware.zip'
 
 jobs:
-  swap_kernel:
+  inject:
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
-    
     steps:
-    # ── 1. Install Dependencies ─────────────────────────────────────────────
-    - name: Install dependencies
-      env:
-        DEBIAN_FRONTEND: noninteractive
+    - name: Setup and Download
       run: |
-        sudo apt-get update -yqq
-        sudo apt-get install -yqq curl unzip wget python3-pip
-        sudo pip3 install gdown
-
-    # ── 2. Download Magiskboot (Global Install) ─────────────────────────────
-    - name: Download Magiskboot
-      run: |
-        echo "Downloading Magiskboot v27.0 directly..."
+        sudo apt-get install -yqq curl unzip cpio wget
+        wget -qO twrp.img "${{ github.event.inputs.twrp_url }}"
+        wget -qO modules.zip "${{ github.event.inputs.modules_url }}"
+        wget -qO firmware.zip "${{ github.event.inputs.firmware_url }}"
+        
+        # Download Magiskboot
         wget -qO magisk.apk "https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk"
         unzip -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
-        mv libmagiskboot.so magiskboot
-        chmod +x magiskboot
-        sudo mv magiskboot /usr/local/bin/
+        sudo mv libmagiskboot.so /usr/local/bin/magiskboot
+        chmod +x /usr/local/bin/magiskboot
 
-    # ── 3. Download TWRP and Stock Boot ─────────────────────────────────────
-    - name: Download Images
+    - name: Inject Files
       run: |
-        echo "Downloading TWRP image..."
-        wget -qO twrp.img "${{ github.event.inputs.twrp_url }}"
-        
-        echo "Downloading Stock Boot/Recovery image from Google Drive..."
-        gdown "https://drive.google.com/uc?id=${{ github.event.inputs.stock_boot_id }}" -O stock_boot.img
-
-    # ── 4. Unpack Images & Swap Kernel ──────────────────────────────────────
-    - name: Unpack & Swap
-      run: |
-        echo "Unpacking Stock Image..."
-        mkdir stock_extract && cd stock_extract
-        magiskboot unpack ../stock_boot.img
-        cd ..
-        
-        echo "Unpacking TWRP Image..."
-        mkdir twrp_extract && cd twrp_extract
+        mkdir work && cd work
         magiskboot unpack ../twrp.img
+        mkdir ramdisk_extract && cd ramdisk_extract
+        cpio -i < ../ramdisk.cpio || true
         
-        echo "Swapping Kernel and Device Tree (DTB)..."
-        # Copying the real working kernel and DTB from Stock to TWRP
-        cp -f ../stock_extract/kernel . || echo "Warning: No kernel found in stock"
-        cp -f ../stock_extract/dtb . || echo "Warning: No dtb found in stock"
-        cp -f ../stock_extract/dtbo.img . || echo "Warning: No dtbo found in stock"
+        # Inject Drivers and Firmware
+        mkdir -p lib/modules
+        unzip -j ../../modules.zip -d lib/modules/
+        mkdir -p vendor/firmware
+        unzip -j ../../firmware.zip -d vendor/firmware/
         
-        echo "Repacking Final TWRP with Stock Kernel..."
-        magiskboot repack ../twrp.img ../twrp_kernel_swapped.img
+        # Load touch script
+        echo '#!/system/bin/sh' > load_touch.sh
+        echo 'for m in /lib/modules/*.ko; do insmod $m; done' >> load_touch.sh
+        chmod +x load_touch.sh
+        
+        # Add to init.rc
+        cat << 'EOF' >> ../init.rc
+        service load_touch /system/bin/sh /load_touch.sh
+            user root
+            group root
+            oneshot
+            seclabel u:r:recovery:s0
+        on fs
+            start load_touch
+        EOF
+        
+        # Repack
+        find . | cpio -o -H newc > ../ramdisk.cpio
+        cd ..
+        magiskboot repack ../twrp.img ../twrp_touch_final.img
 
-    # ── 5. Upload Final Artifact ────────────────────────────────────────────
-    - name: Upload Final TWRP
+    - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: TWRP-Kernel-Swapped
-        path: twrp_kernel_swapped.img
-        retention-days: 5
+        name: TWRP-Touch-Fixed-Final
+        path: work/twrp_touch_final.img
