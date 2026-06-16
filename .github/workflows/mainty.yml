@@ -26,7 +26,7 @@ jobs:
         sudo apt-get update -yqq
         sudo apt-get install -yqq curl unzip cpio wget
 
-    # ── 2. Download Magiskboot (Direct API Bypass) ──────────────────────────
+    # ── 2. Download Magiskboot (Global Install) ─────────────────────────────
     - name: Download Magiskboot
       run: |
         echo "Downloading Magiskboot v27.0 directly..."
@@ -34,6 +34,8 @@ jobs:
         unzip -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
         mv libmagiskboot.so magiskboot
         chmod +x magiskboot
+        # Is line se hum magiskboot ko global command bana rahe hain
+        sudo mv magiskboot /usr/local/bin/
 
     # ── 3. Download TWRP and Modules.zip (DIRECT LINK) ──────────────────────
     - name: Download TWRP and Modules
@@ -48,11 +50,11 @@ jobs:
     - name: Unpack TWRP & Extract Ramdisk
       run: |
         mkdir work && cd work
-        ../magiskboot unpack ../twrp.img
+        magiskboot unpack ../twrp.img
         
         echo "Extracting Ramdisk..."
         mkdir ramdisk_extract && cd ramdisk_extract
-        ../magiskboot decompress ../ramdisk.cpio ramdisk.cpio.tmp
+        magiskboot decompress ../ramdisk.cpio ramdisk.cpio.tmp
         cpio -i < ramdisk.cpio.tmp || true
         rm ramdisk.cpio.tmp
 
@@ -101,10 +103,10 @@ jobs:
         cd ..
         
         echo "Compressing Ramdisk..."
-        ../magiskboot compress=gzip ramdisk.cpio.uncompressed ramdisk.cpio
+        magiskboot compress=gzip ramdisk.cpio.uncompressed ramdisk.cpio
         
         echo "Repacking Final TWRP Image..."
-        ../magiskboot repack ../twrp.img ../twrp_touch_fixed_final.img
+        magiskboot repack ../twrp.img ../twrp_touch_fixed_final.img
 
     # ── 7. Upload Final Artifact ─────────────────────────────────────────────
     - name: Upload Final TWRP
