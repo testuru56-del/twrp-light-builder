@@ -124,8 +124,11 @@ jobs:
     - name: Build TWRP
       working-directory: twrp
       run: |
-        echo "Patching obsolete codes in Device Tree..."
+        echo "Patching obsolete codes and paths in Device Tree..."
+        # Fix 1: Remove obsolete BOOT_CONTROL_HAL
         find device/xiaomi/${{ github.event.inputs.device_code }} -name "*.mk" -exec sed -i 's/PRODUCT_STATIC_BOOT_CONTROL_HAL/# PRODUCT_STATIC_BOOT_CONTROL_HAL/g' {} +
+        # Fix 2: Change vendor/omni to vendor/twrp
+        find device/xiaomi/${{ github.event.inputs.device_code }} -name "*.mk" -exec sed -i 's/vendor\/omni/vendor\/twrp/g' {} +
         
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
