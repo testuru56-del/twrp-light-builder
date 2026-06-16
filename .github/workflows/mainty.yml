@@ -37,21 +37,22 @@ jobs:
         remove-android: 'true'
         remove-haskell: 'true'
 
-    # ── 2. Install Dependencies & Tools (ULTRA BULLETPROOF) ────────────────
+    # ── 2. Install Dependencies & Tools (KILLING ALL BACKGROUND UPDATES) ────
     - name: Install dependencies
       timeout-minutes: 10
       run: |
-        echo "Removing Ubuntu's annoying prompt services..."
-        sudo DEBIAN_FRONTEND=noninteractive apt-get purge -yq needrestart || true
+        echo "Stopping Ubuntu's background auto-updates that lock the server..."
+        sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service || true
+        sudo systemctl disable apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service || true
         
-        echo "Freeing up apt locks..."
-        sudo killall apt apt-get || true
+        echo "Force killing any stuck apt processes..."
+        sudo killall -9 apt apt-get dpkg unattended-upgrades || true
         sudo rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock
         sudo dpkg --configure -a || true
         
         echo "Installing packages safely..."
-        sudo apt-get update -yq
-        sudo DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -yq --no-install-recommends \
+        sudo apt-get update -yqq
+        sudo DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -yqq --no-install-recommends \
           git-core gnupg flex bison build-essential zip curl zlib1g-dev gcc-multilib g++-multilib \
           libc6-dev-i386 libncurses5 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z1-dev \
           libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig python3-pip
