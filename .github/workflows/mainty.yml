@@ -1,18 +1,17 @@
-name: Inject Touch Drivers and Firmware
-
+name: Minimal Injection
 on:
   workflow_dispatch:
     inputs:
       twrp_url:
-        description: 'Direct URL to Bootable TWRP (No Touch)'
+        description: 'Direct URL to TWRP.img'
         required: true
         default: 'https://github.com/testuru56-del/twrp-light-builder/releases/download/twrp/twrp.img'
       modules_url:
-        description: 'Direct URL to modules.zip (Drivers)'
+        description: 'Direct URL to modules.zip'
         required: true
         default: 'https://github.com/testuru56-del/twrp-light-builder/raw/main/modules.zip'
       firmware_url:
-        description: 'Direct URL to firmware.zip (Firmware)'
+        description: 'Direct URL to firmware.zip'
         required: true
         default: 'https://github.com/testuru56-del/twrp-light-builder/raw/main/firmware.zip'
 
@@ -20,58 +19,37 @@ jobs:
   inject:
     runs-on: ubuntu-22.04
     steps:
-    - name: Setup and Download
-      run: |
-        sudo apt-get install -yqq curl unzip cpio wget
-        wget -qO twrp.img "${{ github.event.inputs.twrp_url }}"
-        wget -qO modules.zip "${{ github.event.inputs.modules_url }}"
-        wget -qO firmware.zip "${{ github.event.inputs.firmware_url }}"
-        
-        # Download Magiskboot
-        wget -qO magisk.apk "https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk"
-        unzip -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
-        sudo mv libmagiskboot.so /usr/local/bin/magiskboot
-        chmod +x /usr/local/bin/magiskboot
-
-    - name: Inject Files
-      run: |
-        mkdir work && cd work
-        magiskboot unpack ../twrp.img
-        mkdir ramdisk_extract && cd ramdisk_extract
-        cpio -i < ../ramdisk.cpio || true
-        
-        # Inject Drivers and Firmware
-        mkdir -p lib/modules
-        unzip -j ../../modules.zip -d lib/modules/
-        mkdir -p vendor/firmware
-        unzip -j ../../firmware.zip -d vendor/firmware/
-        
-        # Load touch script
-        echo '#!/system/bin/sh' > load_touch.sh
-        echo 'for m in /lib/modules/*.ko; do insmod $m; done' >> load_touch.sh
-        chmod +x load_touch.sh
-        
-        # Add to init.rc
-        cat << 'EOF' >> ../init.rc
-        service load_touch /system/bin/sh /load_touch.sh
-            user root
-            group root
-            oneshot
-            seclabel u:r:recovery:s0
-        on fs
-            start load_touch
-        EOF
-        
-        # Repack
-        find . | cpio -o -H newc > ../ramdisk.cpio
-        cd ..
-        magiskboot repack ../twrp.img ../twrp_touch_final.img
-
-        # ── 7. Upload Final Artifact (CORRECTED PATH) ─────────────────────────────
-    - name: Upload Final TWRP
-      uses: actions/upload-artifact@v4
-      with:
-        name: TWRP-Touch-Fixed-Final
-        path: twrp_touch_final.img
-        retention-days: 5
-
+      - name: Minimal Injection
+        run: |
+          sudo apt-get install -yqq curl unzip cpio wget
+          wget -O twrp.img "${{ github.event.inputs.twrp_url }}"
+          wget -O modules.zip "${{ github.event.inputs.modules_url }}"
+          wget -O firmware.zip "${{ github.event.inputs.firmware_url }}"
+          
+          # Get Magiskboot
+          wget -qO magisk.apk "https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk"
+          unzip -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
+          chmod +x libmagiskboot.so
+          
+          # Unpack
+          ./libmagiskboot.so unpack twrp.img
+          mkdir -p ramdisk_extract
+          cd ramdisk_extract
+          ../libmagiskboot.so decompress ../ramdisk.cpio ramdisk.cpio.tmp || cpio -i < ../ramdisk.cpio || true
+          [ -f ramdisk.cpio.tmp ] && cpio -i < ramdisk.cpio.tmp || true
+          
+          # Minimal Inject
+          mkdir -p vendor/lib/modules
+          unzip -j ../modules.zip -d vendor/lib/modules/
+          mkdir -p vendor/firmware
+          unzip -j ../firmware.zip -d vendor/firmware/
+          
+          # Repack
+          find . | cpio -o -H newc > ../ramdisk.cpio
+          cd ..
+          ./libmagiskboot.so repack twrp.img twrp_minimal_inject.img
+          
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TWRP-Minimal-Inject
+          path: twrp_minimal_inject.img
